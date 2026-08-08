@@ -72,28 +72,37 @@ export const earthFragmentShader = /* glsl */ `
 
     // Výrazné modré "earthshine" podsvícení nezávislé na textuře - tohle
     // (ne násobení) je to, co dělá noční oceán viditelně tmavě modrým
-    // místo černé díry, podobně jako na hezkých kompozitních "Night Earth"
-    // fotkách.
-    vec3 nightAmbient = vec3(0.05, 0.085, 0.17);
+    // místo černé díry. TEĎ navíc reaguje na "jas" (exposure) - dřív to
+    // byla napevno daná konstanta, takže posuvník jasu na noční oceán
+    // (= většinu viditelné plochy v noci) neměl vůbec žádný vliv. Rozsah
+    // je vyladěný tak, že výchozí jas (1.35) dá zhruba stejný výsledek
+    // jako dřívější konstanta, ale posuvník teď reálně jede od tlumeného
+    // po výrazně sytější.
+    float ambientBoost = mix(0.55, 2.2, clamp((exposure - 0.5) / 4.5, 0.0, 1.0));
+    vec3 nightAmbient = vec3(0.055, 0.095, 0.19) * ambientBoost;
 
     vec3 nightColor = nightLights + nightAmbient;
     vec3 color = mix(nightColor, dayColor, dayMix);
 
-    // Teplá soumraková záře podél terminátoru - pevný příspěvek nezávislý
-    // na exposure, ať při vysokém jasu nepřebije barvy do hněda. Sytější
-    // a o něco širší než dřív pro dramatičtější "golden hour" okraj.
-    float twilight = 1.0 - smoothstep(0.0, 0.2, abs(sunDot));
+    // Teplá soumraková záře podél terminátoru - úzké pásmo natěsno kolem
+    // terminátoru (dřív 0.2 rad, teď 0.13 - skoro shodné s pásmem dayMix).
+    // Širší pásmo přidávalo teplou oranžovou i hluboko do noční strany,
+    // kde se aditivně mísila s modrým nightAmbient a výsledek byl špinavě
+    // hnědo-šedý ("vybledlý") místo čisté syté barvy.
+    float twilight = 1.0 - smoothstep(0.0, 0.13, abs(sunDot));
     vec3 twilightColor = vec3(1.0, 0.42, 0.12);
     color += twilightColor * twilight * twilightStrength;
 
     // Výraznější zvýšení sytosti barev pro živější, "sexy" vzhled (sytější
     // modré oceány, zelenější/zlatější kontinenty) - bez posunu jasu.
     float luma = dot(color, vec3(0.299, 0.587, 0.114));
-    color = mix(vec3(luma), color, 1.4);
+    color = mix(vec3(luma), color, 1.6);
 
-    // Velmi jemné "S-křivkové" zesílení kontrastu, ať den nepůsobí ploše.
+    // Zesílené "S-křivkové" zesílení kontrastu (dřív jen 15 % příměs, teď
+    // 28 %) - přímá reakce na "barvy jsou pořád vybledlé": bez dostatečného
+    // kontrastu i sytější barvy působí ploše/šedivě.
     color = clamp(color, 0.0, 1.0);
-    color = color * color * (3.0 - 2.0 * color) * 0.15 + color * 0.85;
+    color = color * color * (3.0 - 2.0 * color) * 0.28 + color * 0.72;
 
     gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
   }
@@ -115,10 +124,11 @@ export const cloudsFragmentShader = /* glsl */ `
     float lightFactor = smoothstep(-0.3, 0.2, sunDot);
 
     float cloudLum = texture2D(cloudsTexture, vUv).r;
-    // V noci teď mraky výrazně čitelnější (dřív mix(0.55, 1.0, ...), tedy
-    // skoro neviditelné) - jemně "měsíčním svitem" nasvícené, mírně
-    // chladnější (namodralý) tón oproti dennímu bílému.
-    float alpha = cloudLum * opacity * mix(0.7, 1.0, lightFactor);
+    // Mraky v noci jemně viditelné (měsíčním svitem nasvícené), ale ne
+    // moc husté - hodně husté poloprůhledné mraky přes celou noční stranu
+    // opticky "zamlžují" kontrast pod sebou a přispívají k vybledlému
+    // dojmu, který si uživatel stěžoval.
+    float alpha = cloudLum * opacity * mix(0.5, 1.0, lightFactor);
     vec3 cloudColor = mix(vec3(0.8, 0.87, 1.0), vec3(1.0), lightFactor);
 
     gl_FragColor = vec4(cloudColor, alpha);

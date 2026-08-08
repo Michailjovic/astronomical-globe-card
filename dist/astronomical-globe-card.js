@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.3.6
+ * @version 0.3.7
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -49,15 +49,23 @@
  * modulu ("Custom element doesn't exist"). `node --check` na .js soubor
  * bez ESM kontextu to bohužel nezachytilo (parsuje ho shovívavěji než
  * skutečný prohlížečový ESM loader) - ověřeno teď reálným ESM importem.
+ *
+ * v0.3.7: řeší zpětnou vazbu "barvy jsou pořád vybledlé a posuvník jasu
+ * skoro nic nedělá" - noční "earthshine" podsvícení oceánu bylo napevno
+ * dané konstantou (posuvník jasu na něj neměl žádný vliv, viz
+ * earth-shaders.js), soumrakový pás byl moc široký a teplá barva se
+ * aditivně mísila s modrým podsvícením hluboko v noční straně (výsledek:
+ * špinavě hnědo-šedá), a noční mraky byly možná až moc husté/zamlžující.
+ * Všechny tři opraveny.
  */
 
-// POZOR: verze v query stringu níže (?v=0.3.6) je záměrně napsaná natvrdo,
+// POZOR: verze v query stringu níže (?v=0.3.7) je záměrně napsaná natvrdo,
 // NE přes proměnnou/template literal - specifikátor static importu musí být
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.3.6';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.6';
+import * as THREE from './lib/three.module.min.js?v=0.3.7';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.7';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -67,9 +75,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.3.6';
+} from './lib/earth-shaders.js?v=0.3.7';
 
-const CARD_VERSION = '0.3.6';
+const CARD_VERSION = '0.3.7';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -506,7 +514,7 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._cloudsUniforms = {
       cloudsTexture: { value: null },
       sunDirection: { value: new THREE.Vector3(1, 0, 0) },
-      opacity: { value: 0.45 },
+      opacity: { value: 0.4 },
     };
     const cloudsMaterial = new THREE.ShaderMaterial({
       uniforms: this._cloudsUniforms,
