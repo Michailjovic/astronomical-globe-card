@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.1.0
+ * @version 0.1.1
  */
 
 import * as THREE from './lib/three.module.min.js';
@@ -24,7 +24,7 @@ import {
   atmosphereFragmentShader,
 } from './lib/earth-shaders.js';
 
-const CARD_VERSION = '0.1.0';
+const CARD_VERSION = '0.1.1';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const EARTH_RADIUS = 1;
 const CAMERA_DISTANCE = 2.55;
@@ -50,6 +50,7 @@ const DEFAULT_CONFIG = {
   show_day_length: true,
   rotation_wobble: true,
   accent_color: '',
+  brightness: 1.35,
 };
 
 // ---------------------------------------------------------------------------
@@ -282,8 +283,9 @@ class AstronomicalGlobeCard extends HTMLElement {
       }
 
       .agc-overlay-bottom {
-        position: absolute; left: 18px; right: 18px; bottom: 14px;
+        position: absolute; left: 62px; right: 62px; bottom: 20px;
         pointer-events: none; text-shadow: 0 1px 6px rgba(0,0,0,0.6);
+        text-align: center;
       }
       .agc-row {
         font-size: 13px; color: rgba(255,255,255,0.85); line-height: 1.5;
@@ -294,7 +296,7 @@ class AstronomicalGlobeCard extends HTMLElement {
       .agc-corner {
         position: absolute; width: 44px; height: 44px;
         display: flex; align-items: center; justify-content: center;
-        opacity: 0.9;
+        opacity: 0.9; z-index: 2;
       }
       .agc-corner-bl { left: 14px; bottom: 14px; }
       .agc-corner-br { right: 14px; bottom: 14px; }
@@ -312,6 +314,9 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._els.title.textContent = this._config.title || '';
     if (this._config.accent_color) {
       this.style.setProperty('--agc-accent', this._config.accent_color);
+    }
+    if (this._earthUniforms) {
+      this._earthUniforms.exposure.value = this._config.brightness || DEFAULT_CONFIG.brightness;
     }
   }
 
@@ -339,8 +344,9 @@ class AstronomicalGlobeCard extends HTMLElement {
       dayTexture: { value: null },
       nightTexture: { value: null },
       sunDirection: { value: new THREE.Vector3(1, 0, 0) },
-      nightBrightness: { value: 1.6 },
-      twilightStrength: { value: 0.35 },
+      nightBrightness: { value: 2.2 },
+      twilightStrength: { value: 0.28 },
+      exposure: { value: this._config.brightness || DEFAULT_CONFIG.brightness },
     };
     const earthMaterial = new THREE.ShaderMaterial({
       uniforms: this._earthUniforms,
@@ -758,6 +764,10 @@ const EDITOR_SCHEMA = [
   { name: 'show_countdown', selector: { boolean: {} } },
   { name: 'show_day_length', selector: { boolean: {} } },
   { name: 'rotation_wobble', selector: { boolean: {} } },
+  {
+    name: 'brightness',
+    selector: { number: { min: 0.7, max: 2.5, step: 0.05, mode: 'slider' } },
+  },
   { name: 'accent_color', selector: { text: {} } },
 ];
 
@@ -772,6 +782,7 @@ const EDITOR_LABELS = {
   show_countdown: 'Zobrazit odpočet do východu/západu',
   show_day_length: 'Zobrazit délku dne',
   rotation_wobble: 'Jemná animovaná rotace',
+  brightness: 'Jas glóbu',
   accent_color: 'Barva zvýraznění (CSS, volitelné)',
 };
 

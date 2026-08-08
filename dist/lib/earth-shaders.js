@@ -27,6 +27,7 @@ export const earthFragmentShader = /* glsl */ `
   uniform vec3 sunDirection;
   uniform float nightBrightness;
   uniform float twilightStrength;
+  uniform float exposure;
 
   varying vec2 vUv;
   varying vec3 vNormal;
@@ -48,7 +49,10 @@ export const earthFragmentShader = /* glsl */ `
     vec3 twilightColor = vec3(1.0, 0.45, 0.15);
     color += twilightColor * twilight * twilightStrength;
 
-    gl_FragColor = vec4(color, 1.0);
+    // celkové zesvětlení pro lepší čitelnost na dashboardu (nastavitelné)
+    color *= exposure;
+
+    gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
   }
 `;
 
