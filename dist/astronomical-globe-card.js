@@ -10,16 +10,19 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.3.2
+ * @version 0.3.3
  *
- * POZOR (cache): textury se verzují query parametrem `?v=CARD_VERSION`
- * (viz proměnná V níže) - to je bezpečné, jde o obyčejné HTTP GET požadavky
- * přes TextureLoader. Vnořené JS moduly (lib/*.js) se záměrně importují
- * staticky (standardní `import` nahoře souboru), NE přes dynamický
- * `await import()` s verzovanou URL - ten se v praxi ukázal křehčí
- * (přidává další síťové roundtripy do startu karty a jeho selhání
- * shazovalo celou kartu do prázdna bez chybové hlášky). Aktualizace HACS
- * / hard refresh běžně stačí; pokud ne, pomůže "Redownload" v HACS.
+ * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
+ * (standardní `import` nahoře souboru - spolehlivější než dynamický
+ * `await import()`, který se v praxi ukázal křehčí a jeho selhání shazovalo
+ * celou kartu do prázdna bez chybové hlášky), ALE se stejně verzují
+ * natvrdo napsaným `?v=X.Y.Z` v samotném specifikátoru importu (musí se
+ * ručně bumpnout na 3 místech při každé verzi: @version výše, CARD_VERSION
+ * konstanta, a query string ve 3 static importech - viz paměť "verzování").
+ * Bez téhle cache-busting query je reálné riziko, že prohlížeč/HA servuje
+ * starou/rozbitou cache vnořeného souboru napořád, což shodí registraci
+ * celé karty ("Custom element doesn't exist") bez jakékoli viditelné chyby.
+ * Textury (obrázky přes TextureLoader) se verzují stejně, přes proměnnou V.
  *
  * SPOLEHLIVOST NAČÍTÁNÍ: každá textura se při selhání HTTP požadavku
  * jednou automaticky zopakuje (dočasný výpadek sítě) a pokud selže i
@@ -27,8 +30,13 @@
  * plátna. Stejně tak selhání WebGL inicializace (_initThree) už není tiché.
  */
 
-import * as THREE from './lib/three.module.min.js';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js';
+// POZOR: verze v query stringu níže (?v=0.3.3) je záměrně napsaná natvrdo,
+// NE přes proměnnou/template literal - specifikátor static importu musí být
+// syntaktický string literál, jinak by to nebyl platný static import. Musí
+// se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
+// jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
+import * as THREE from './lib/three.module.min.js?v=0.3.3';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.3';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -38,9 +46,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js';
+} from './lib/earth-shaders.js?v=0.3.3';
 
-const CARD_VERSION = '0.3.2';
+const CARD_VERSION = '0.3.3';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
