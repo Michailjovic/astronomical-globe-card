@@ -42,6 +42,12 @@ export const earthFragmentShader = /* glsl */ `
     vec3 dayColor = texture2D(dayTexture, vUv).rgb;
     vec3 nightColor = texture2D(nightTexture, vUv).rgb * nightBrightness;
 
+    // Aditivní ambientní "zemský svit" pro noční stranu. Bez tohoto nemá
+    // multiplikativní exposure/jas prakticky žádný viditelný efekt na
+    // téměř černé pixely oceánu/pevniny bez měst (0 * cokoliv = 0) - jas
+    // by se pak projevil jen na už tak jasných světlech měst (clip do bíla).
+    nightColor += vec3(0.02, 0.032, 0.055);
+
     vec3 color = mix(nightColor, dayColor, dayMix);
 
     // teplá soumraková záře podél terminátoru

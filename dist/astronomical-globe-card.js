@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.2.0
+ * @version 0.2.1
  */
 
 import * as THREE from './lib/three.module.min.js';
@@ -24,7 +24,7 @@ import {
   atmosphereFragmentShader,
 } from './lib/earth-shaders.js';
 
-const CARD_VERSION = '0.2.0';
+const CARD_VERSION = '0.2.1';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const EARTH_RADIUS = 1;
 const CAMERA_DISTANCE = 2.55;
