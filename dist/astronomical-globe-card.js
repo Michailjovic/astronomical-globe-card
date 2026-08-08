@@ -175,6 +175,11 @@ function makeGlowSpriteTexture() {
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, size, size);
   const tex = new THREE.CanvasTexture(canvas);
+  // Canvas 2D barvy jsou sRGB - použité v built-in SpriteMaterial, který
+  // (na rozdíl od našich vlastních ShaderMaterial) automaticky dělá
+  // sRGB<->lineární zpětný převod na výstupu. Bez tohoto štítku by ta
+  // automatika dostala nesprávný vstup a záře by vycházela vymytá/mlhavá.
+  tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }
 
@@ -196,6 +201,7 @@ function makeSunCoreTexture() {
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, size, size);
   const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace; // viz poznámka u makeGlowSpriteTexture
   return tex;
 }
 
@@ -214,7 +220,9 @@ function makeMarkerTexture(color) {
   ctx.lineWidth = 3;
   ctx.strokeStyle = 'rgba(255,255,255,0.9)';
   ctx.stroke();
-  return new THREE.CanvasTexture(canvas);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace; // viz poznámka u makeGlowSpriteTexture
+  return tex;
 }
 
 // ---------------------------------------------------------------------------
@@ -552,7 +560,14 @@ class AstronomicalGlobeCard extends HTMLElement {
     // -- Atmosféra (Fresnel záře) ---------------------------------------------
     const atmosphereGeometry = new THREE.SphereGeometry(EARTH_RADIUS * 1.045, 64, 64);
     this._atmosphereUniforms = {
-      glowColor: { value: new THREE.Color(0x57c8ff) },
+      // POZOR: `new THREE.Color(hex)` by tady tiše aplikovalo three.js
+      // automatickou sRGB->lineární konverzi (od r152 defaultní chování
+      // ColorManagement) - výsledek by byl citelně tmavší/míň sytý, než
+      // hex hodnota napovídá (0x57c8ff by vyšlo jako [0.10, 0.58, 1.00]
+      // místo [0.34, 0.78, 1.00]), protože náš vlastní atmosphereFragment
+      // shader žádný zpětný převod na výstupu nedělá. `setHex(hex,
+      // NoColorSpace)` dá barvu 1:1 podle hex hodnoty.
+      glowColor: { value: new THREE.Color().setHex(0x57c8ff, THREE.NoColorSpace) },
       glowPower: { value: 2.15 },
       glowIntensity: {
         value: ATMOSPHERE_BASE_INTENSITY * (cfg.atmosphere_intensity ?? DEFAULT_CONFIG.atmosphere_intensity),
