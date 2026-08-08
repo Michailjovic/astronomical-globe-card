@@ -1,17 +1,35 @@
 # Astronomical Globe Card
 
+[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz)
+
 Realistický 3D glóbus Země pro Home Assistant Lovelace, inspirovaný ciferníkem
 **Astronomie** na Apple Watch – reálné NASA/Solar System Scope textury,
 fyzikálně korektní den/noc terminátor počítaný z aktuální polohy Slunce,
 atmosférická záře, mraky a Měsíc jako samostatné těleso se skutečnou fází
 a polohou.
 
-Žádný build krok – čisté ES moduly, three.js je vendorováno lokálně v `lib/`.
+Žádný build krok – čisté ES moduly, three.js je vendorováno lokálně v
+`dist/lib/`.
 
-## Instalace (manuální)
+![preview](docs/preview.png)
 
-1. Zkopírujte **celou složku** `astronomical-globe-card/` do `<config>/www/`,
-   např.:
+## Instalace
+
+### HACS (doporučeno)
+
+1. HACS → ⋮ (vpravo nahoře) → **Custom repositories**.
+2. URL: `https://github.com/<tvůj-github-účet>/astronomical-globe-card`,
+   kategorie **Dashboard** (plugin).
+3. Najdi **Astronomical Globe Card** v HACS a klikni **Download**.
+4. HA by měl resource přidat automaticky. Pokud ne: **Nastavení →
+   Dashboardy → ⋮ → Resources** → přidat
+   `/hacsfiles/astronomical-globe-card/astronomical-globe-card.js`
+   jako **JavaScript Module**.
+5. Obnov prohlížeč (Ctrl+Shift+R).
+
+### Manuální instalace
+
+1. Zkopíruj obsah složky `dist/` do `<config>/www/astronomical-globe-card/`:
 
    ```
    <config>/www/astronomical-globe-card/
@@ -20,22 +38,19 @@ a polohou.
        assets/
    ```
 
-2. V Home Assistantu: **Nastavení → Dashboardy → ⋮ → Resources** → přidat
-   nový resource:
+2. **Nastavení → Dashboardy → ⋮ → Resources** → přidej
+   `/local/astronomical-globe-card/astronomical-globe-card.js` jako
+   **JavaScript Module**.
+3. Obnov prohlížeč.
 
-   - URL: `/local/astronomical-globe-card/astronomical-globe-card.js`
-   - Typ: **JavaScript Module**
+### Přidání karty
 
-3. Obnovte prohlížeč (Ctrl+Shift+R / vyčistit cache).
+```yaml
+type: custom:astronomical-globe-card
+```
 
-4. Přidejte kartu do dashboardu:
-
-   ```yaml
-   type: custom:astronomical-globe-card
-   ```
-
-   Nebo v UI editoru dashboardu vyhledejte **Astronomical Globe Card**
-   a nastavte přes grafický editor (entita, kvalita textur, přepínače).
+Nebo přes UI editor dashboardu vyhledej **Astronomical Globe Card** a
+nastav vše graficky (zdroj polohy, kvalita textur, přepínače).
 
 ## Konfigurace (YAML)
 
@@ -78,7 +93,7 @@ Kvalitu lze změnit kdykoli přes vizuální editor karty i za běhu.
 - **Terminátor** se počítá z reálné subsolární polohy (deklinace + rovnice
   času, nízko-přesné USNO/NOAA vzorce) a vykresluje se přímo ve fragment
   shaderu jako plynulý přechod den/noc textury s teplou soumrakovou září.
-- **Měsíc** má skutečnou polohu (zjednodušená Meeových nízko-přesná řada,
+- **Měsíc** má skutečnou polohu (zjednodušená Meeusova nízko-přesná řada,
   přesnost řádově desítky obloukových minut) a jeho fáze vzniká přirozeně
   fyzikálním osvětlením 3D koule stejným směrem slunečního světla – žádná
   "podvržená" textura fáze.
@@ -92,11 +107,13 @@ Kvalitu lze změnit kdykoli přes vizuální editor karty i za běhu.
 
 ## Zdroje a licence
 
+- **Kód karty** (`dist/astronomical-globe-card.js`, `dist/lib/astro.js`,
+  `dist/lib/earth-shaders.js`): MIT, viz [LICENSE](LICENSE).
 - **Textury Země a Měsíce**: [Solar System Scope](https://www.solarsystemscope.com/textures/)
   (CC BY 4.0 – „Solar System Scope“).
-- **three.js**: MIT licence, vendorováno lokálně v `lib/three.module.min.js`
-  (v0.160.0), žádná závislost na CDN za běhu.
-- Astronomické výpočty (`lib/astro.js`) jsou vlastní implementace
+- **three.js**: MIT licence, vendorováno lokálně v
+  `dist/lib/three.module.min.js` (v0.160.0), žádná závislost na CDN za běhu.
+- Astronomické výpočty (`dist/lib/astro.js`) jsou vlastní implementace
   standardních veřejně publikovaných nízko-přesných algoritmů (NOAA Solar
   Calculator, Meeus – *Astronomical Algorithms*).
 
