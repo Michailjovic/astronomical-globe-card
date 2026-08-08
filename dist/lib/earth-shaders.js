@@ -40,18 +40,20 @@ export const earthFragmentShader = /* glsl */ `
     float dayMix = smoothstep(-0.12, 0.12, sunDot);
 
     vec3 dayColor = texture2D(dayTexture, vUv).rgb;
+    // NASA Black Marble - na rozdíl od čistě černé "jen města" textury už
+    // přirozeně obsahuje jemný modrý "měsíční" nádech oceánu/pevniny, není
+    // proto potřeba uměle přimíchávat ztmavenou denní texturu.
     vec3 nightRaw = texture2D(nightTexture, vUv).rgb;
 
-    // "Jas" (exposure) cíleně zesiluje SVĚTLA MĚST (texturová data jsou
-    // téměř nulová mimo osvětlené oblasti), takže tmavý oceán/pevninu to
-    // nezabahní do hněda - naopak čím vyšší jas, tím sytější a výraznější
-    // světla, podobně jako na reálných nočních satelitních snímcích.
+    // "Jas" (exposure) cíleně zesiluje hlavně SVĚTLA MĚST (nejjasnější
+    // pixely textury), takže tmavý oceán/pevninu to nezabahní do hněda -
+    // naopak čím vyšší jas, tím sytější a výraznější světla, podobně jako
+    // na reálných nočních satelitních snímcích.
     vec3 nightLights = nightRaw * nightBrightness * exposure;
 
-    // Malé, na exposure NEZÁVISLÉ ambientní podsvícení ("zemský svit"), aby
-    // oceán/pevnina nebyly naprosto černé i bez měst - pevná hodnota, ať
-    // vysoký jas nezaplaví celou noční stranu.
-    vec3 nightAmbient = vec3(0.008, 0.014, 0.026);
+    // Nepatrné, na exposure nezávislé dodatečné podsvícení - textura už má
+    // svůj vlastní modrý nádech, tohle je jen jemný extra "polish".
+    vec3 nightAmbient = vec3(0.004, 0.007, 0.014);
 
     vec3 nightColor = nightLights + nightAmbient;
     vec3 color = mix(nightColor, dayColor, dayMix);
@@ -86,9 +88,35 @@ export const cloudsFragmentShader = /* glsl */ `
     float lightFactor = smoothstep(-0.3, 0.2, sunDot);
 
     float cloudLum = texture2D(cloudsTexture, vUv).r;
-    float alpha = cloudLum * opacity * mix(0.35, 1.0, lightFactor);
+    // v noci jemně viditelné "měsíčním svitem" nasvícené mraky, ne skoro
+    // neviditelné - a mírně chladnější (namodralý) tón oproti dennímu bílému
+    float alpha = cloudLum * opacity * mix(0.55, 1.0, lightFactor);
+    vec3 cloudColor = mix(vec3(0.78, 0.85, 0.98), vec3(1.0), lightFactor);
 
-    gl_FragColor = vec4(vec3(1.0), alpha);
+    gl_FragColor = vec4(cloudColor, alpha);
+  }
+`;
+
+export const skyVertexShader = /* glsl */ `
+  varying vec3 vPos;
+  void main() {
+    vPos = position;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+export const skyFragmentShader = /* glsl */ `
+  uniform sampler2D starsTexture;
+  varying vec3 vPos;
+
+  void main() {
+    vec3 dir = normalize(vPos);
+    // stejná equirektangulární konvence jako geoToVector3() v JS
+    float lat = asin(clamp(dir.y, -1.0, 1.0));
+    float lon = atan(-dir.z, dir.x);
+    float u = (lon + 3.14159265) / (2.0 * 3.14159265);
+    float v = 0.5 - lat / 3.14159265;
+    gl_FragColor = vec4(texture2D(starsTexture, vec2(u, v)).rgb, 1.0);
   }
 `;
 

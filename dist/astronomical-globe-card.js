@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.2.3
+ * @version 0.3.0
  *
  * POZOR (cache): vnořené importy (lib/*.js) i textury se natvrdo verzují
  * query parametrem `?v=CARD_VERSION` (viz níže). Prohlížeče a HA service
@@ -20,7 +20,7 @@
  * vynutí čerstvé stažení úplně všeho.
  */
 
-const CARD_VERSION = '0.2.3';
+const CARD_VERSION = '0.3.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 
@@ -35,6 +35,8 @@ const {
   cloudsFragmentShader,
   atmosphereVertexShader,
   atmosphereFragmentShader,
+  skyVertexShader,
+  skyFragmentShader,
 } = await import(`${CARD_DIR}lib/earth-shaders.js${V}`);
 const EARTH_RADIUS = 1;
 const CAMERA_DISTANCE = 2.55;
@@ -56,6 +58,7 @@ const DEFAULT_CONFIG = {
   show_clouds: true,
   show_moon: true,
   show_sun_marker: true,
+  show_stars: true,
   show_countdown: true,
   show_day_length: true,
   rotation_wobble: true,
@@ -114,10 +117,31 @@ function makeGlowSpriteTexture() {
     size / 2, size / 2, 0,
     size / 2, size / 2, size / 2
   );
-  gradient.addColorStop(0, 'rgba(255, 244, 214, 1)');
-  gradient.addColorStop(0.25, 'rgba(255, 220, 150, 0.9)');
-  gradient.addColorStop(0.6, 'rgba(255, 180, 90, 0.25)');
+  gradient.addColorStop(0, 'rgba(255, 244, 214, 0.9)');
+  gradient.addColorStop(0.18, 'rgba(255, 220, 150, 0.55)');
+  gradient.addColorStop(0.5, 'rgba(255, 180, 90, 0.16)');
   gradient.addColorStop(1, 'rgba(255, 180, 90, 0)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  return tex;
+}
+
+/** Malé, ostré, téměř bílé jádro slunečního záblesku (pro sunSprite). */
+function makeSunCoreTexture() {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const gradient = ctx.createRadialGradient(
+    size / 2, size / 2, 0,
+    size / 2, size / 2, size / 2
+  );
+  gradient.addColorStop(0, 'rgba(255, 255, 250, 1)');
+  gradient.addColorStop(0.12, 'rgba(255, 250, 230, 1)');
+  gradient.addColorStop(0.35, 'rgba(255, 235, 180, 0.6)');
+  gradient.addColorStop(1, 'rgba(255, 220, 150, 0)');
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, size, size);
   const tex = new THREE.CanvasTexture(canvas);
@@ -189,6 +213,14 @@ class AstronomicalGlobeCard extends HTMLElement {
   }
 
   connectedCallback() {
+    if (this._disposed) {
+      // karta byla odpojena z DOM a uvolněna, ale element je znovu použit
+      // (např. reorganizace masonry layoutu) - postavit scénu znovu od nuly
+      this._built = false;
+      this._disposed = false;
+      if (this._hass) this._build();
+      return;
+    }
     if (this._built) {
       this._startLoop();
     }
@@ -196,6 +228,36 @@ class AstronomicalGlobeCard extends HTMLElement {
 
   disconnectedCallback() {
     this._stopLoop();
+    this._dispose();
+  }
+
+  /** Uvolní three.js zdroje (geometrie/materiály/textury/renderer/WebGL kontext). */
+  _dispose() {
+    if (this._disposed || !this._scene) return;
+    this._disposed = true;
+
+    if (this._resizeObserver) {
+      this._resizeObserver.disconnect();
+      this._resizeObserver = null;
+    }
+
+    this._scene.traverse((obj) => {
+      if (obj.geometry) obj.geometry.dispose();
+      const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+      materials.forEach((mat) => {
+        if (!mat) return;
+        Object.values(mat).forEach((val) => {
+          if (val && val.isTexture) val.dispose();
+        });
+        mat.dispose();
+      });
+    });
+
+    if (this._renderer) {
+      this._renderer.dispose();
+      this._renderer.forceContextLoss();
+      this._renderer = null;
+    }
   }
 
   // -- Stavba DOM + three.js scény ------------------------------------------
@@ -334,6 +396,9 @@ class AstronomicalGlobeCard extends HTMLElement {
       // vysokých hodnotách jasu, ale zůstává jemné a stabilní
       this._atmosphereUniforms.glowIntensity.value = 1.1 * (1 + (brightness - 1) * 0.25);
     }
+    if (this._skyMesh) {
+      this._skyMesh.visible = !!this._config.show_stars;
+    }
   }
 
   // -- three.js inicializace -------------------------------------------------
@@ -352,6 +417,20 @@ class AstronomicalGlobeCard extends HTMLElement {
 
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
     this._camera = camera;
+
+    // -- Hvězdné pozadí (skybox) ----------------------------------------------
+    const skyGeometry = new THREE.SphereGeometry(50, 48, 48);
+    this._skyUniforms = { starsTexture: { value: null } };
+    const skyMaterial = new THREE.ShaderMaterial({
+      uniforms: this._skyUniforms,
+      vertexShader: skyVertexShader,
+      fragmentShader: skyFragmentShader,
+      side: THREE.BackSide,
+      depthWrite: false,
+    });
+    const skyMesh = new THREE.Mesh(skyGeometry, skyMaterial);
+    scene.add(skyMesh);
+    this._skyMesh = skyMesh;
 
     // -- Země ---------------------------------------------------------------
     const earthGeometry = new THREE.SphereGeometry(EARTH_RADIUS, 96, 96);
@@ -429,14 +508,27 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._sunLight = sunLight;
     scene.add(new THREE.AmbientLight(0x1c2b45, 0.4));
 
-    const sunSpriteMaterial = new THREE.SpriteMaterial({
+    // Dvouvrstvá záře - velký měkký halo + malé ostré jasné jádro, ať to
+    // připomíná sluneční záblesk na okraji glóbu místo ploché tečky.
+    const sunHaloMaterial = new THREE.SpriteMaterial({
       map: makeGlowSpriteTexture(),
       transparent: true,
       depthTest: true,
       blending: THREE.AdditiveBlending,
     });
-    const sunSprite = new THREE.Sprite(sunSpriteMaterial);
-    sunSprite.scale.set(0.5, 0.5, 1);
+    const sunHalo = new THREE.Sprite(sunHaloMaterial);
+    sunHalo.scale.set(0.85, 0.85, 1);
+    scene.add(sunHalo);
+    this._sunHalo = sunHalo;
+
+    const sunCoreMaterial = new THREE.SpriteMaterial({
+      map: makeSunCoreTexture(),
+      transparent: true,
+      depthTest: true,
+      blending: THREE.AdditiveBlending,
+    });
+    const sunSprite = new THREE.Sprite(sunCoreMaterial);
+    sunSprite.scale.set(0.22, 0.22, 1);
     scene.add(sunSprite);
     this._sunSprite = sunSprite;
 
@@ -483,6 +575,15 @@ class AstronomicalGlobeCard extends HTMLElement {
       this._moonMesh.material.map = setTex(tex);
       this._moonMesh.material.needsUpdate = true;
     });
+
+    // hvězdné pozadí - sdílené pro všechny kvality, načte se jen jednou
+    if (!this._starsLoaded) {
+      this._starsLoaded = true;
+      loader.load(`${CARD_DIR}assets/textures/stars.jpg${V}`, (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        this._skyUniforms.starsTexture.value = tex;
+      });
+    }
   }
 
   // -- Aktualizace dat z Home Assistanta -------------------------------------
@@ -566,8 +667,11 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._earthUniforms.sunDirection.value.copy(sunDirWorld);
     this._cloudsUniforms.sunDirection.value.copy(sunDirWorld);
     this._sunLight.position.copy(sunDirWorld).multiplyScalar(10);
-    this._sunSprite.position.copy(sunDirWorld).multiplyScalar(EARTH_RADIUS * 4.2);
+    const sunPos = sunDirWorld.clone().multiplyScalar(EARTH_RADIUS * 4.2);
+    this._sunSprite.position.copy(sunPos);
+    this._sunHalo.position.copy(sunPos);
     this._sunSprite.visible = !!this._config.show_sun_marker;
+    this._sunHalo.visible = !!this._config.show_sun_marker;
 
     if (this._config.show_moon) {
       const moon = getMoonPosition(now);
@@ -778,6 +882,7 @@ const EDITOR_SCHEMA = [
   { name: 'show_clouds', selector: { boolean: {} } },
   { name: 'show_moon', selector: { boolean: {} } },
   { name: 'show_sun_marker', selector: { boolean: {} } },
+  { name: 'show_stars', selector: { boolean: {} } },
   { name: 'show_countdown', selector: { boolean: {} } },
   { name: 'show_day_length', selector: { boolean: {} } },
   { name: 'rotation_wobble', selector: { boolean: {} } },
@@ -796,6 +901,7 @@ const EDITOR_LABELS = {
   show_clouds: 'Zobrazit mraky',
   show_moon: 'Zobrazit Měsíc',
   show_sun_marker: 'Zobrazit značku Slunce',
+  show_stars: 'Zobrazit hvězdné pozadí',
   show_countdown: 'Zobrazit odpočet do východu/západu',
   show_day_length: 'Zobrazit délku dne',
   rotation_wobble: 'Jemná animovaná rotace',
