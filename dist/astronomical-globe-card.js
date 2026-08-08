@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.3.4
+ * @version 0.3.5
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -33,16 +33,23 @@
  * dál od glóbu, takže je kolem planety vidět kus hvězdného nebe (dřív
  * glóbus vyplňoval prakticky celý rámeček), sytější barvy dne i noci,
  * jasnější/kontrastnější hvězdné pozadí a výraznější atmosférická záře.
+ *
+ * v0.3.5: OPRAVA reálného důvodu, proč v0.3.4 vizuálně skoro nic nezměnila -
+ * noční textura Země má oceán jako čistě černé pixely, takže násobení jasem
+ * na něj nemělo žádný efekt (0 × cokoliv = 0); teď se místo toho přičítá
+ * výrazné konstantní modré podsvícení. Hvězdné pozadí navíc přestalo
+ * vycházet z (velmi tmavé/nekontrastní) textury `stars.jpg` a generuje se
+ * procedurálně v shaderu (hvězdy + barevná modro-purpurová mlhovina).
  * Viz earth-shaders.js pro detaily barevného ladění.
  */
 
-// POZOR: verze v query stringu níže (?v=0.3.4) je záměrně napsaná natvrdo,
+// POZOR: verze v query stringu níže (?v=0.3.5) je záměrně napsaná natvrdo,
 // NE přes proměnnou/template literal - specifikátor static importu musí být
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.3.4';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.4';
+import * as THREE from './lib/three.module.min.js?v=0.3.5';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.5';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -52,9 +59,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.3.4';
+} from './lib/earth-shaders.js?v=0.3.5';
 
-const CARD_VERSION = '0.3.4';
+const CARD_VERSION = '0.3.5';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -425,7 +432,7 @@ class AstronomicalGlobeCard extends HTMLElement {
     if (this._atmosphereUniforms) {
       // mírně provázané s jasem, ať modrý okraj nezůstává "utopený" při
       // vysokých hodnotách jasu, ale zůstává jemné a stabilní
-      this._atmosphereUniforms.glowIntensity.value = 1.3 * (1 + (brightness - 1) * 0.25);
+      this._atmosphereUniforms.glowIntensity.value = 1.55 * (1 + (brightness - 1) * 0.25);
     }
     if (this._skyMesh) {
       this._skyMesh.visible = !!this._config.show_stars;
@@ -449,11 +456,12 @@ class AstronomicalGlobeCard extends HTMLElement {
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
     this._camera = camera;
 
-    // -- Hvězdné pozadí (skybox) ----------------------------------------------
+    // -- Hvězdné pozadí (skybox) ------------------------------------------
+    // Procedurální hvězdy + mlhovina přímo v shaderu (viz earth-shaders.js) -
+    // žádná textura/uniform tu není potřeba.
     const skyGeometry = new THREE.SphereGeometry(50, 48, 48);
-    this._skyUniforms = { starsTexture: { value: null } };
     const skyMaterial = new THREE.ShaderMaterial({
-      uniforms: this._skyUniforms,
+      uniforms: {},
       vertexShader: skyVertexShader,
       fragmentShader: skyFragmentShader,
       side: THREE.BackSide,
@@ -509,8 +517,8 @@ class AstronomicalGlobeCard extends HTMLElement {
       // Sytější, o něco světlejší azurová než dřív - výraznější modrý
       // "halo" okraj podobný fotorealistickým renderům Země z vesmíru.
       glowColor: { value: new THREE.Color(0x57c8ff) },
-      glowPower: { value: 2.3 },
-      glowIntensity: { value: 1.3 },
+      glowPower: { value: 2.15 },
+      glowIntensity: { value: 1.55 },
     };
     const atmosphereMaterial = new THREE.ShaderMaterial({
       uniforms: this._atmosphereUniforms,
@@ -642,15 +650,8 @@ class AstronomicalGlobeCard extends HTMLElement {
       this._moonMesh.material.map = setTex(tex);
       this._moonMesh.material.needsUpdate = true;
     }, 'Měsíc');
-
-    // hvězdné pozadí - sdílené pro všechny kvality, načte se jen jednou
-    if (!this._starsLoaded) {
-      this._starsLoaded = true;
-      this._loadTextureWithRetry(loader, `${CARD_DIR}assets/textures/stars.jpg${V}`, (tex) => {
-        tex.colorSpace = THREE.SRGBColorSpace;
-        this._skyUniforms.starsTexture.value = tex;
-      }, 'hvězdy');
-    }
+    // Hvězdné pozadí se negeneruje z textury (viz earth-shaders.js), takže
+    // tu není co dohrávat.
   }
 
   // -- Aktualizace dat z Home Assistanta -------------------------------------
