@@ -10,22 +10,32 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.2.1
+ * @version 0.2.2
+ *
+ * POZOR (cache): vnořené importy (lib/*.js) i textury se natvrdo verzují
+ * query parametrem `?v=CARD_VERSION` (viz níže). Prohlížeče a HA service
+ * worker cachují každý modul/soubor nezávisle podle URL - samotný refresh
+ * hlavního souboru nutně nezajistí čerstvé načtení vnořených souborů, pokud
+ * jejich URL zůstane stejná. Díky verzované URL se při každém bumpu verze
+ * vynutí čerstvé stažení úplně všeho.
  */
 
-import * as THREE from './lib/three.module.min.js';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js';
-import {
+const CARD_VERSION = '0.2.2';
+const CARD_DIR = new URL('.', import.meta.url).href;
+const V = `?v=${CARD_VERSION}`;
+
+const THREE = await import(`${CARD_DIR}lib/three.module.min.js${V}`);
+const { getSunPosition, getMoonPosition, getSunTimes } = await import(
+  `${CARD_DIR}lib/astro.js${V}`
+);
+const {
   earthVertexShader,
   earthFragmentShader,
   cloudsVertexShader,
   cloudsFragmentShader,
   atmosphereVertexShader,
   atmosphereFragmentShader,
-} from './lib/earth-shaders.js';
-
-const CARD_VERSION = '0.2.1';
-const CARD_DIR = new URL('.', import.meta.url).href;
+} = await import(`${CARD_DIR}lib/earth-shaders.js${V}`);
 const EARTH_RADIUS = 1;
 const CAMERA_DISTANCE = 2.55;
 const MOON_ORBIT_RADIUS = 2.5;
@@ -453,16 +463,16 @@ class AstronomicalGlobeCard extends HTMLElement {
       return tex;
     };
 
-    loader.load(`${base}earth-day.jpg`, (tex) => {
+    loader.load(`${base}earth-day.jpg${V}`, (tex) => {
       this._earthUniforms.dayTexture.value = setTex(tex);
     });
-    loader.load(`${base}earth-night.jpg`, (tex) => {
+    loader.load(`${base}earth-night.jpg${V}`, (tex) => {
       this._earthUniforms.nightTexture.value = setTex(tex);
     });
-    loader.load(`${base}earth-clouds.jpg`, (tex) => {
+    loader.load(`${base}earth-clouds.jpg${V}`, (tex) => {
       this._cloudsUniforms.cloudsTexture.value = tex;
     });
-    loader.load(`${base}moon.jpg`, (tex) => {
+    loader.load(`${base}moon.jpg${V}`, (tex) => {
       this._moonMesh.material.map = setTex(tex);
       this._moonMesh.material.needsUpdate = true;
     });
