@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.3.7
+ * @version 0.3.8
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -29,43 +29,39 @@
  * opakování, zobrazí se viditelná chybová hláška místo tichého prázdného
  * plátna. Stejně tak selhání WebGL inicializace (_initThree) už není tiché.
  *
- * v0.3.4: vizuální ladění ("živější, sexy vzhled") - kamera je odsazená
- * dál od glóbu, takže je kolem planety vidět kus hvězdného nebe (dřív
- * glóbus vyplňoval prakticky celý rámeček), sytější barvy dne i noci,
- * jasnější/kontrastnější hvězdné pozadí a výraznější atmosférická záře.
+ * v0.3.4: vizuální ladění - kamera odsazená dál od glóbu (kolem planety je
+ * vidět kus hvězdného nebe), sytější barvy, jasnější hvězdné pozadí,
+ * výraznější atmosférická záře.
  *
- * v0.3.5: OPRAVA reálného důvodu, proč v0.3.4 vizuálně skoro nic nezměnila -
- * noční textura Země má oceán jako čistě černé pixely, takže násobení jasem
- * na něj nemělo žádný efekt (0 × cokoliv = 0); teď se místo toho přičítá
- * výrazné konstantní modré podsvícení. Hvězdné pozadí navíc přestalo
- * vycházet z (velmi tmavé/nekontrastní) textury `stars.jpg` a generuje se
- * procedurálně v shaderu (hvězdy + barevná modro-purpurová mlhovina).
- * Viz earth-shaders.js pro detaily barevného ladění.
+ * v0.3.5: oprava reálného důvodu, proč v0.3.4 vizuálně skoro nic
+ * nezměnila - noční textura Země má oceán jako čistě černé pixely, takže
+ * násobení jasem na něj nemělo žádný efekt; teď se přičítá konstantní
+ * modré podsvícení. Hvězdné pozadí se navíc generuje procedurálně místo
+ * z (velmi tmavé) textury stars.jpg.
  *
- * v0.3.6: oprava reálné regrese z v0.3.5 - v `earth-shaders.js` byl v GLSL
- * komentáři uvnitř template literalu omylem párový znak backtick (`` ` ``)
- * kolem slova nightAmbient, což v JS předčasně ukončilo template literal
- * a rozbilo syntaxi celého souboru → celá karta spadla už při načtení
- * modulu ("Custom element doesn't exist"). `node --check` na .js soubor
- * bez ESM kontextu to bohužel nezachytilo (parsuje ho shovívavěji než
- * skutečný prohlížečový ESM loader) - ověřeno teď reálným ESM importem.
+ * v0.3.6: oprava regrese z v0.3.5 - v earth-shaders.js byl v GLSL
+ * komentáři uvnitř template literalu omylem párový znak backtick, což
+ * v JS předčasně ukončilo string a rozbilo syntaxi celého souboru → karta
+ * spadla už při načtení modulu ("Custom element doesn't exist").
  *
- * v0.3.7: řeší zpětnou vazbu "barvy jsou pořád vybledlé a posuvník jasu
- * skoro nic nedělá" - noční "earthshine" podsvícení oceánu bylo napevno
- * dané konstantou (posuvník jasu na něj neměl žádný vliv, viz
- * earth-shaders.js), soumrakový pás byl moc široký a teplá barva se
- * aditivně mísila s modrým podsvícením hluboko v noční straně (výsledek:
- * špinavě hnědo-šedá), a noční mraky byly možná až moc husté/zamlžující.
- * Všechny tři opraveny.
+ * v0.3.7: řešilo zpětnou vazbu "barvy jsou pořád vybledlé, posuvník jasu
+ * skoro nic nedělá" - užší soumrakový pás, silnější kontrast/sytost.
+ *
+ * v0.3.8: VŠECHNY parametry, které ovlivňují vzhled obrazu (síla nočního
+ * podsvícení oceánu, sytost, kontrast, síla soumraku, krytí mraků, síla
+ * atmosférické záře, jas hvězd/mlhoviny), jsou teď samostatné položky
+ * v konfiguraci a posuvníky ve vizuálním editoru - místo aby byly
+ * zadrátované jako konstanty v shaderu a měnily se jen přes zásah do kódu.
+ * Viz earth-shaders.js pro detaily jednotlivých uniforem.
  */
 
-// POZOR: verze v query stringu níže (?v=0.3.7) je záměrně napsaná natvrdo,
+// POZOR: verze v query stringu níže (?v=0.3.8) je záměrně napsaná natvrdo,
 // NE přes proměnnou/template literal - specifikátor static importu musí být
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.3.7';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.7';
+import * as THREE from './lib/three.module.min.js?v=0.3.8';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.8';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -75,9 +71,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.3.7';
+} from './lib/earth-shaders.js?v=0.3.8';
 
-const CARD_VERSION = '0.3.7';
+const CARD_VERSION = '0.3.8';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -86,6 +82,9 @@ const EARTH_RADIUS = 1;
 const CAMERA_DISTANCE = 3.2;
 const MOON_ORBIT_RADIUS = 2.5;
 const MOON_RADIUS = 0.16;
+// Základní (referenční) hodnota atmosférické záře - config `atmosphere_
+// intensity` ji násobí (1.0 = tato hodnota).
+const ATMOSPHERE_BASE_INTENSITY = 1.55;
 
 const QUALITY_TIERS = {
   low: { label: 'Nízká (rychlá)', earth: 1024, folder: 'low' },
@@ -107,7 +106,15 @@ const DEFAULT_CONFIG = {
   show_day_length: true,
   rotation_wobble: true,
   accent_color: '',
-  brightness: 1.35,
+  // -- vzhled/barevnost - všechno níž má svůj posuvník ve vizuálním editoru
+  brightness: 1.35, // jas/exposure - hlavně světla měst v noci
+  night_ambient: 1.0, // síla modrého "earthshine" podsvícení nočního oceánu
+  saturation: 1.6, // celková sytost barev
+  contrast: 0.28, // síla S-křivkového kontrastu (0 = beze změny)
+  twilight_strength: 0.34, // síla teplé soumrakové záře podél terminátoru
+  cloud_opacity: 0.4, // krytí mraků
+  atmosphere_intensity: 1.0, // síla modré atmosférické záře na okraji
+  sky_intensity: 1.0, // jas hvězd a mlhoviny v pozadí
 };
 
 // ---------------------------------------------------------------------------
@@ -397,25 +404,25 @@ class AstronomicalGlobeCard extends HTMLElement {
 
       .agc-overlay-top {
         position: absolute; top: 14px; left: 18px; right: 18px;
-        pointer-events: none; text-shadow: 0 1px 6px rgba(0,0,0,0.6);
+        pointer-events: none; text-shadow: 0 1px 8px rgba(0,0,0,0.85), 0 0 20px rgba(0,0,0,0.5);
       }
       .agc-date {
-        font-size: 15px; letter-spacing: 1.5px; font-weight: 600;
-        color: rgba(255,255,255,0.92); text-transform: uppercase;
+        font-size: 15px; letter-spacing: 1.5px; font-weight: 700;
+        color: #fff; text-transform: uppercase;
       }
       .agc-time {
-        font-size: clamp(30px, 11vw, 52px); font-weight: 300; line-height: 1.05;
+        font-size: clamp(30px, 11vw, 52px); font-weight: 400; line-height: 1.05;
         color: #fff; font-variant-numeric: tabular-nums; margin-top: 2px;
       }
 
       .agc-overlay-bottom {
         position: absolute; left: 62px; right: 62px; bottom: 20px;
-        pointer-events: none; text-shadow: 0 1px 6px rgba(0,0,0,0.6);
+        pointer-events: none; text-shadow: 0 1px 8px rgba(0,0,0,0.85), 0 0 20px rgba(0,0,0,0.5);
         text-align: center;
       }
       .agc-row {
-        font-size: 13px; color: rgba(255,255,255,0.85); line-height: 1.5;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        font-size: 13px; font-weight: 600; color: #fff;
+        line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
       .agc-row:empty { display: none; }
 
@@ -441,17 +448,27 @@ class AstronomicalGlobeCard extends HTMLElement {
     if (this._config.accent_color) {
       this.style.setProperty('--agc-accent', this._config.accent_color);
     }
-    const brightness = this._config.brightness || DEFAULT_CONFIG.brightness;
+    const cfg = this._config;
+
     if (this._earthUniforms) {
-      this._earthUniforms.exposure.value = brightness;
+      this._earthUniforms.exposure.value = cfg.brightness ?? DEFAULT_CONFIG.brightness;
+      this._earthUniforms.nightAmbientStrength.value = cfg.night_ambient ?? DEFAULT_CONFIG.night_ambient;
+      this._earthUniforms.colorSaturation.value = cfg.saturation ?? DEFAULT_CONFIG.saturation;
+      this._earthUniforms.colorContrast.value = cfg.contrast ?? DEFAULT_CONFIG.contrast;
+      this._earthUniforms.twilightStrength.value = cfg.twilight_strength ?? DEFAULT_CONFIG.twilight_strength;
+    }
+    if (this._cloudsUniforms) {
+      this._cloudsUniforms.opacity.value = cfg.cloud_opacity ?? DEFAULT_CONFIG.cloud_opacity;
     }
     if (this._atmosphereUniforms) {
-      // mírně provázané s jasem, ať modrý okraj nezůstává "utopený" při
-      // vysokých hodnotách jasu, ale zůstává jemné a stabilní
-      this._atmosphereUniforms.glowIntensity.value = 1.55 * (1 + (brightness - 1) * 0.25);
+      const atmoIntensity = cfg.atmosphere_intensity ?? DEFAULT_CONFIG.atmosphere_intensity;
+      this._atmosphereUniforms.glowIntensity.value = ATMOSPHERE_BASE_INTENSITY * atmoIntensity;
+    }
+    if (this._skyUniforms) {
+      this._skyUniforms.skyIntensity.value = cfg.sky_intensity ?? DEFAULT_CONFIG.sky_intensity;
     }
     if (this._skyMesh) {
-      this._skyMesh.visible = !!this._config.show_stars;
+      this._skyMesh.visible = !!cfg.show_stars;
     }
   }
 
@@ -472,12 +489,16 @@ class AstronomicalGlobeCard extends HTMLElement {
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
     this._camera = camera;
 
+    const cfg = this._config || DEFAULT_CONFIG;
+
     // -- Hvězdné pozadí (skybox) ------------------------------------------
-    // Procedurální hvězdy + mlhovina přímo v shaderu (viz earth-shaders.js) -
-    // žádná textura/uniform tu není potřeba.
+    // Procedurální hvězdy + mlhovina přímo v shaderu (viz earth-shaders.js).
     const skyGeometry = new THREE.SphereGeometry(50, 48, 48);
+    this._skyUniforms = {
+      skyIntensity: { value: cfg.sky_intensity ?? DEFAULT_CONFIG.sky_intensity },
+    };
     const skyMaterial = new THREE.ShaderMaterial({
-      uniforms: {},
+      uniforms: this._skyUniforms,
       vertexShader: skyVertexShader,
       fragmentShader: skyFragmentShader,
       side: THREE.BackSide,
@@ -494,11 +515,12 @@ class AstronomicalGlobeCard extends HTMLElement {
       dayTexture: { value: null },
       nightTexture: { value: null },
       sunDirection: { value: new THREE.Vector3(1, 0, 0) },
-      // Sytější noční světla měst a teplejší/výraznější soumrakový okraj
-      // (viz earth-shaders.js) pro živější celkový vzhled.
       nightBrightness: { value: 2.6 },
-      twilightStrength: { value: 0.34 },
-      exposure: { value: this._config.brightness || DEFAULT_CONFIG.brightness },
+      twilightStrength: { value: cfg.twilight_strength ?? DEFAULT_CONFIG.twilight_strength },
+      exposure: { value: cfg.brightness ?? DEFAULT_CONFIG.brightness },
+      nightAmbientStrength: { value: cfg.night_ambient ?? DEFAULT_CONFIG.night_ambient },
+      colorSaturation: { value: cfg.saturation ?? DEFAULT_CONFIG.saturation },
+      colorContrast: { value: cfg.contrast ?? DEFAULT_CONFIG.contrast },
     };
     const earthMaterial = new THREE.ShaderMaterial({
       uniforms: this._earthUniforms,
@@ -514,7 +536,7 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._cloudsUniforms = {
       cloudsTexture: { value: null },
       sunDirection: { value: new THREE.Vector3(1, 0, 0) },
-      opacity: { value: 0.4 },
+      opacity: { value: cfg.cloud_opacity ?? DEFAULT_CONFIG.cloud_opacity },
     };
     const cloudsMaterial = new THREE.ShaderMaterial({
       uniforms: this._cloudsUniforms,
@@ -530,11 +552,11 @@ class AstronomicalGlobeCard extends HTMLElement {
     // -- Atmosféra (Fresnel záře) ---------------------------------------------
     const atmosphereGeometry = new THREE.SphereGeometry(EARTH_RADIUS * 1.045, 64, 64);
     this._atmosphereUniforms = {
-      // Sytější, o něco světlejší azurová než dřív - výraznější modrý
-      // "halo" okraj podobný fotorealistickým renderům Země z vesmíru.
       glowColor: { value: new THREE.Color(0x57c8ff) },
       glowPower: { value: 2.15 },
-      glowIntensity: { value: 1.55 },
+      glowIntensity: {
+        value: ATMOSPHERE_BASE_INTENSITY * (cfg.atmosphere_intensity ?? DEFAULT_CONFIG.atmosphere_intensity),
+      },
     };
     const atmosphereMaterial = new THREE.ShaderMaterial({
       uniforms: this._atmosphereUniforms,
@@ -974,6 +996,34 @@ const EDITOR_SCHEMA = [
     name: 'brightness',
     selector: { number: { min: 0.5, max: 5, step: 0.1, mode: 'slider' } },
   },
+  {
+    name: 'night_ambient',
+    selector: { number: { min: 0.2, max: 3, step: 0.1, mode: 'slider' } },
+  },
+  {
+    name: 'saturation',
+    selector: { number: { min: 0.6, max: 2.5, step: 0.05, mode: 'slider' } },
+  },
+  {
+    name: 'contrast',
+    selector: { number: { min: 0, max: 0.6, step: 0.02, mode: 'slider' } },
+  },
+  {
+    name: 'twilight_strength',
+    selector: { number: { min: 0, max: 1, step: 0.02, mode: 'slider' } },
+  },
+  {
+    name: 'cloud_opacity',
+    selector: { number: { min: 0, max: 1, step: 0.05, mode: 'slider' } },
+  },
+  {
+    name: 'atmosphere_intensity',
+    selector: { number: { min: 0.2, max: 3, step: 0.1, mode: 'slider' } },
+  },
+  {
+    name: 'sky_intensity',
+    selector: { number: { min: 0.2, max: 3, step: 0.1, mode: 'slider' } },
+  },
   { name: 'accent_color', selector: { text: {} } },
 ];
 
@@ -989,7 +1039,14 @@ const EDITOR_LABELS = {
   show_countdown: 'Zobrazit odpočet do východu/západu',
   show_day_length: 'Zobrazit délku dne',
   rotation_wobble: 'Jemná animovaná rotace',
-  brightness: 'Jas glóbu',
+  brightness: 'Jas (světla měst v noci)',
+  night_ambient: 'Podsvícení nočního oceánu',
+  saturation: 'Sytost barev',
+  contrast: 'Kontrast',
+  twilight_strength: 'Síla soumrakové záře',
+  cloud_opacity: 'Krytí mraků',
+  atmosphere_intensity: 'Síla atmosférické záře',
+  sky_intensity: 'Jas hvězd a mlhoviny',
   accent_color: 'Barva zvýraznění (CSS, volitelné)',
 };
 
