@@ -10,25 +10,26 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.3.0
+ * @version 0.3.2
  *
- * POZOR (cache): vnořené importy (lib/*.js) i textury se natvrdo verzují
- * query parametrem `?v=CARD_VERSION` (viz níže). Prohlížeče a HA service
- * worker cachují každý modul/soubor nezávisle podle URL - samotný refresh
- * hlavního souboru nutně nezajistí čerstvé načtení vnořených souborů, pokud
- * jejich URL zůstane stejná. Díky verzované URL se při každém bumpu verze
- * vynutí čerstvé stažení úplně všeho.
+ * POZOR (cache): textury se verzují query parametrem `?v=CARD_VERSION`
+ * (viz proměnná V níže) - to je bezpečné, jde o obyčejné HTTP GET požadavky
+ * přes TextureLoader. Vnořené JS moduly (lib/*.js) se záměrně importují
+ * staticky (standardní `import` nahoře souboru), NE přes dynamický
+ * `await import()` s verzovanou URL - ten se v praxi ukázal křehčí
+ * (přidává další síťové roundtripy do startu karty a jeho selhání
+ * shazovalo celou kartu do prázdna bez chybové hlášky). Aktualizace HACS
+ * / hard refresh běžně stačí; pokud ne, pomůže "Redownload" v HACS.
+ *
+ * SPOLEHLIVOST NAČÍTÁNÍ: každá textura se při selhání HTTP požadavku
+ * jednou automaticky zopakuje (dočasný výpadek sítě) a pokud selže i
+ * opakování, zobrazí se viditelná chybová hláška místo tichého prázdného
+ * plátna. Stejně tak selhání WebGL inicializace (_initThree) už není tiché.
  */
 
-const CARD_VERSION = '0.3.0';
-const CARD_DIR = new URL('.', import.meta.url).href;
-const V = `?v=${CARD_VERSION}`;
-
-const THREE = await import(`${CARD_DIR}lib/three.module.min.js${V}`);
-const { getSunPosition, getMoonPosition, getSunTimes } = await import(
-  `${CARD_DIR}lib/astro.js${V}`
-);
-const {
+import * as THREE from './lib/three.module.min.js';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js';
+import {
   earthVertexShader,
   earthFragmentShader,
   cloudsVertexShader,
@@ -37,7 +38,11 @@ const {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} = await import(`${CARD_DIR}lib/earth-shaders.js${V}`);
+} from './lib/earth-shaders.js';
+
+const CARD_VERSION = '0.3.2';
+const CARD_DIR = new URL('.', import.meta.url).href;
+const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
 const CAMERA_DISTANCE = 2.55;
 const MOON_ORBIT_RADIUS = 2.5;
@@ -313,7 +318,17 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._clock = new THREE.Clock();
     this._wobbleSeed = Math.random() * 1000;
 
-    this._initThree();
+    try {
+      this._initThree();
+    } catch (err) {
+      // Selhání WebGL inicializace (chybí podpora, vyčerpaný kontext apod.)
+      // dřív skončilo tichou prázdnou kartou - teď je vidět proč.
+      console.error('[astronomical-globe-card] Inicializace 3D vykreslování selhala:', err);
+      this._els.error.hidden = false;
+      this._els.error.textContent =
+        'Nepodařilo se inicializovat 3D vykreslování (WebGL). Zkus obnovit stránku (Ctrl+Shift+R).';
+      return;
+    }
     this._renderStaticParts();
     this._loadTextures();
 
@@ -550,6 +565,35 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._loadTextures();
   }
 
+  /**
+   * Načte texturu s jedním automatickým opakováním při selhání (výpadek sítě
+   * / dočasná chyba HTTP se u statických assetů běžně vyřeší druhým pokusem)
+   * a s viditelnou chybovou hláškou, pokud selže i opakování - místo
+   * dosavadního tichého "nenačte se to a karta zůstane prázdná".
+   */
+  _loadTextureWithRetry(loader, url, onLoad, label) {
+    const attempt = (isRetry) => {
+      loader.load(
+        isRetry ? `${url}&retry=1` : url,
+        onLoad,
+        undefined,
+        (err) => {
+          if (!isRetry) {
+            setTimeout(() => attempt(true), 800);
+            return;
+          }
+          console.error(`[astronomical-globe-card] Nepodařilo se načíst texturu "${label}":`, url, err);
+          this._pendingTextureErrors = (this._pendingTextureErrors || 0) + 1;
+          if (this._els && this._els.error) {
+            this._els.error.hidden = false;
+            this._els.error.textContent = `Nepodařilo se načíst texturu (${label}). Zkontroluj připojení a zkus obnovit stránku.`;
+          }
+        }
+      );
+    };
+    attempt(false);
+  }
+
   _loadTextures() {
     const tier = QUALITY_TIERS[this._config.quality] || QUALITY_TIERS.medium;
     const folder = tier.folder;
@@ -562,27 +606,27 @@ class AstronomicalGlobeCard extends HTMLElement {
       return tex;
     };
 
-    loader.load(`${base}earth-day.jpg${V}`, (tex) => {
+    this._loadTextureWithRetry(loader, `${base}earth-day.jpg${V}`, (tex) => {
       this._earthUniforms.dayTexture.value = setTex(tex);
-    });
-    loader.load(`${base}earth-night.jpg${V}`, (tex) => {
+    }, 'den');
+    this._loadTextureWithRetry(loader, `${base}earth-night.jpg${V}`, (tex) => {
       this._earthUniforms.nightTexture.value = setTex(tex);
-    });
-    loader.load(`${base}earth-clouds.jpg${V}`, (tex) => {
+    }, 'noc');
+    this._loadTextureWithRetry(loader, `${base}earth-clouds.jpg${V}`, (tex) => {
       this._cloudsUniforms.cloudsTexture.value = tex;
-    });
-    loader.load(`${base}moon.jpg${V}`, (tex) => {
+    }, 'mraky');
+    this._loadTextureWithRetry(loader, `${base}moon.jpg${V}`, (tex) => {
       this._moonMesh.material.map = setTex(tex);
       this._moonMesh.material.needsUpdate = true;
-    });
+    }, 'Měsíc');
 
     // hvězdné pozadí - sdílené pro všechny kvality, načte se jen jednou
     if (!this._starsLoaded) {
       this._starsLoaded = true;
-      loader.load(`${CARD_DIR}assets/textures/stars.jpg${V}`, (tex) => {
+      this._loadTextureWithRetry(loader, `${CARD_DIR}assets/textures/stars.jpg${V}`, (tex) => {
         tex.colorSpace = THREE.SRGBColorSpace;
         this._skyUniforms.starsTexture.value = tex;
-      });
+      }, 'hvězdy');
     }
   }
 
