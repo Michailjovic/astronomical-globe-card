@@ -684,23 +684,40 @@ class AstronomicalGlobeCard extends HTMLElement {
     const loader = new THREE.TextureLoader();
     const base = `${CARD_DIR}assets/textures/${folder}/`;
 
-    const setTex = (tex) => {
+    // Den/noc/mraky jedou v NAŠICH VLASTNÍCH ShaderMaterial (earth-shaders.js),
+    // které nemají žádný vestavěný zpětný sRGB<->lineární převod na výstupu.
+    // Kdyby se jim texturám nastavilo SRGBColorSpace (jako se to dřív dělalo
+    // přes stejný `setTex` pro všechno), GPU by je při čtení v shaderu tiše
+    // dekódoval na lineární hodnoty - ale bez odpovídajícího zpětného
+    // překódování na výstupu by byl výsledek citelně tmavší, což byla reálná
+    // příčina dojmu "ztmavovacího filtru přes celou kartu". Proto tu chceme
+    // NoColorSpace - texture2D() v shaderu pak vrací syrové 0-1 hodnoty
+    // přesně podle bajtů v JPG, přesně to, s čím naše barevné ladění počítá.
+    const setRawTex = (tex) => {
+      tex.colorSpace = THREE.NoColorSpace;
+      tex.anisotropy = 4;
+      return tex;
+    };
+    // Měsíc naopak jede v built-in MeshStandardMaterial, který sRGB<->lineární
+    // převod na výstupu DĚLÁ automaticky - tam SRGBColorSpace zůstává správně
+    // (dekódování na vstupu + zakódování na výstupu se navzájem vyruší).
+    const setColorTex = (tex) => {
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.anisotropy = 4;
       return tex;
     };
 
     this._loadTextureWithRetry(loader, `${base}earth-day.jpg${V}`, (tex) => {
-      this._earthUniforms.dayTexture.value = setTex(tex);
+      this._earthUniforms.dayTexture.value = setRawTex(tex);
     }, 'den');
     this._loadTextureWithRetry(loader, `${base}earth-night.jpg${V}`, (tex) => {
-      this._earthUniforms.nightTexture.value = setTex(tex);
+      this._earthUniforms.nightTexture.value = setRawTex(tex);
     }, 'noc');
     this._loadTextureWithRetry(loader, `${base}earth-clouds.jpg${V}`, (tex) => {
-      this._cloudsUniforms.cloudsTexture.value = tex;
+      this._cloudsUniforms.cloudsTexture.value = setRawTex(tex);
     }, 'mraky');
     this._loadTextureWithRetry(loader, `${base}moon.jpg${V}`, (tex) => {
-      this._moonMesh.material.map = setTex(tex);
+      this._moonMesh.material.map = setColorTex(tex);
       this._moonMesh.material.needsUpdate = true;
     }, 'Měsíc');
     // Hvězdné pozadí se negeneruje z textury (viz earth-shaders.js), takže
