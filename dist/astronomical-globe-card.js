@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.3.3
+ * @version 0.3.4
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -28,15 +28,21 @@
  * jednou automaticky zopakuje (dočasný výpadek sítě) a pokud selže i
  * opakování, zobrazí se viditelná chybová hláška místo tichého prázdného
  * plátna. Stejně tak selhání WebGL inicializace (_initThree) už není tiché.
+ *
+ * v0.3.4: vizuální ladění ("živější, sexy vzhled") - kamera je odsazená
+ * dál od glóbu, takže je kolem planety vidět kus hvězdného nebe (dřív
+ * glóbus vyplňoval prakticky celý rámeček), sytější barvy dne i noci,
+ * jasnější/kontrastnější hvězdné pozadí a výraznější atmosférická záře.
+ * Viz earth-shaders.js pro detaily barevného ladění.
  */
 
-// POZOR: verze v query stringu níže (?v=0.3.3) je záměrně napsaná natvrdo,
+// POZOR: verze v query stringu níže (?v=0.3.4) je záměrně napsaná natvrdo,
 // NE přes proměnnou/template literal - specifikátor static importu musí být
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.3.3';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.3';
+import * as THREE from './lib/three.module.min.js?v=0.3.4';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.4';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -46,13 +52,15 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.3.3';
+} from './lib/earth-shaders.js?v=0.3.4';
 
-const CARD_VERSION = '0.3.3';
+const CARD_VERSION = '0.3.4';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
-const CAMERA_DISTANCE = 2.55;
+// Odsazeno dál (dřív 2.55) - glóbus zabírá cca 70 % výšky rámečku místo
+// skoro 100 %, takže je kolem něj vidět kus hvězdného vesmíru.
+const CAMERA_DISTANCE = 3.2;
 const MOON_ORBIT_RADIUS = 2.5;
 const MOON_RADIUS = 0.16;
 
@@ -359,7 +367,7 @@ class AstronomicalGlobeCard extends HTMLElement {
       .agc-title:empty { display: none; }
       .agc-stage {
         position: relative; width: 100%; aspect-ratio: 1 / 1;
-        background: radial-gradient(circle at 50% 45%, #05070d 0%, #000 75%);
+        background: radial-gradient(circle at 50% 45%, #0a0f1e 0%, #000 80%);
         overflow: hidden;
       }
       .agc-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
@@ -417,7 +425,7 @@ class AstronomicalGlobeCard extends HTMLElement {
     if (this._atmosphereUniforms) {
       // mírně provázané s jasem, ať modrý okraj nezůstává "utopený" při
       // vysokých hodnotách jasu, ale zůstává jemné a stabilní
-      this._atmosphereUniforms.glowIntensity.value = 1.1 * (1 + (brightness - 1) * 0.25);
+      this._atmosphereUniforms.glowIntensity.value = 1.3 * (1 + (brightness - 1) * 0.25);
     }
     if (this._skyMesh) {
       this._skyMesh.visible = !!this._config.show_stars;
@@ -462,8 +470,10 @@ class AstronomicalGlobeCard extends HTMLElement {
       dayTexture: { value: null },
       nightTexture: { value: null },
       sunDirection: { value: new THREE.Vector3(1, 0, 0) },
-      nightBrightness: { value: 2.2 },
-      twilightStrength: { value: 0.28 },
+      // Sytější noční světla měst a teplejší/výraznější soumrakový okraj
+      // (viz earth-shaders.js) pro živější celkový vzhled.
+      nightBrightness: { value: 2.6 },
+      twilightStrength: { value: 0.34 },
       exposure: { value: this._config.brightness || DEFAULT_CONFIG.brightness },
     };
     const earthMaterial = new THREE.ShaderMaterial({
@@ -480,7 +490,7 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._cloudsUniforms = {
       cloudsTexture: { value: null },
       sunDirection: { value: new THREE.Vector3(1, 0, 0) },
-      opacity: { value: 0.4 },
+      opacity: { value: 0.45 },
     };
     const cloudsMaterial = new THREE.ShaderMaterial({
       uniforms: this._cloudsUniforms,
@@ -496,9 +506,11 @@ class AstronomicalGlobeCard extends HTMLElement {
     // -- Atmosféra (Fresnel záře) ---------------------------------------------
     const atmosphereGeometry = new THREE.SphereGeometry(EARTH_RADIUS * 1.045, 64, 64);
     this._atmosphereUniforms = {
-      glowColor: { value: new THREE.Color(0x4da6ff) },
-      glowPower: { value: 2.6 },
-      glowIntensity: { value: 1.1 },
+      // Sytější, o něco světlejší azurová než dřív - výraznější modrý
+      // "halo" okraj podobný fotorealistickým renderům Země z vesmíru.
+      glowColor: { value: new THREE.Color(0x57c8ff) },
+      glowPower: { value: 2.3 },
+      glowIntensity: { value: 1.3 },
     };
     const atmosphereMaterial = new THREE.ShaderMaterial({
       uniforms: this._atmosphereUniforms,
@@ -521,18 +533,21 @@ class AstronomicalGlobeCard extends HTMLElement {
       transparent: true,
     });
     const markerSprite = new THREE.Sprite(markerMaterial);
-    markerSprite.scale.set(0.09, 0.09, 1);
+    // O trochu větší než dřív (0.09) - kamera je teď dál od glóbu (viz
+    // CAMERA_DISTANCE), takže bez úpravy by značka opticky zdrobněla.
+    markerSprite.scale.set(0.1, 0.1, 1);
     earthMesh.add(markerSprite);
     this._markerSprite = markerSprite;
 
     // -- Slunce (světelný zdroj + vizuální značka) ----------------------------
-    const sunLight = new THREE.DirectionalLight(0xfff2d9, 1.4);
+    const sunLight = new THREE.DirectionalLight(0xfff2d9, 1.55);
     scene.add(sunLight);
     this._sunLight = sunLight;
-    scene.add(new THREE.AmbientLight(0x1c2b45, 0.4));
+    scene.add(new THREE.AmbientLight(0x1c2b45, 0.5));
 
     // Dvouvrstvá záře - velký měkký halo + malé ostré jasné jádro, ať to
     // připomíná sluneční záblesk na okraji glóbu místo ploché tečky.
+    // Měřítka o něco větší než dřív kvůli odsazenější kameře.
     const sunHaloMaterial = new THREE.SpriteMaterial({
       map: makeGlowSpriteTexture(),
       transparent: true,
@@ -540,7 +555,7 @@ class AstronomicalGlobeCard extends HTMLElement {
       blending: THREE.AdditiveBlending,
     });
     const sunHalo = new THREE.Sprite(sunHaloMaterial);
-    sunHalo.scale.set(0.85, 0.85, 1);
+    sunHalo.scale.set(1.0, 1.0, 1);
     scene.add(sunHalo);
     this._sunHalo = sunHalo;
 
@@ -551,7 +566,7 @@ class AstronomicalGlobeCard extends HTMLElement {
       blending: THREE.AdditiveBlending,
     });
     const sunSprite = new THREE.Sprite(sunCoreMaterial);
-    sunSprite.scale.set(0.22, 0.22, 1);
+    sunSprite.scale.set(0.26, 0.26, 1);
     scene.add(sunSprite);
     this._sunSprite = sunSprite;
 

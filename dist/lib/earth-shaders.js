@@ -2,6 +2,11 @@
  * earth-shaders.js
  * GLSL shadery pro realistický glóbus: den/noc terminátor s texturami,
  * soumrakový okraj, mraky a atmosférická záře (Fresnel rim glow).
+ *
+ * v0.3.4: vizuální "make-over" pro sytější, "sexy" vzhled blíž referenčním
+ * fotorealistickým renderům Země (sytější barvy dne, jasnější/kontrastnější
+ * hvězdné pozadí, o něco teplejší a výraznější soumrakový okraj). Číselné
+ * ladění (kamera, jas atmosféry) je v `astronomical-globe-card.js`.
  */
 
 export const earthVertexShader = /* glsl */ `
@@ -51,22 +56,29 @@ export const earthFragmentShader = /* glsl */ `
     // na reálných nočních satelitních snímcích.
     vec3 nightLights = nightRaw * nightBrightness * exposure;
 
-    // Nepatrné, na exposure nezávislé dodatečné podsvícení - textura už má
-    // svůj vlastní modrý nádech, tohle je jen jemný extra "polish".
-    vec3 nightAmbient = vec3(0.004, 0.007, 0.014);
+    // Jemné, na exposure nezávislé dodatečné podsvícení nočního oceánu -
+    // sytější modrá než dřív, ať noční strana nepůsobí jako čistě černá
+    // díra, ale jako skutečně nasvícená planeta ("earthshine").
+    vec3 nightAmbient = vec3(0.007, 0.012, 0.024);
 
     vec3 nightColor = nightLights + nightAmbient;
     vec3 color = mix(nightColor, dayColor, dayMix);
 
     // Teplá soumraková záře podél terminátoru - pevný příspěvek nezávislý
-    // na exposure, ať při vysokém jasu nepřebije barvy do hněda.
-    float twilight = 1.0 - smoothstep(0.0, 0.16, abs(sunDot));
-    vec3 twilightColor = vec3(1.0, 0.45, 0.15);
+    // na exposure, ať při vysokém jasu nepřebije barvy do hněda. Sytější
+    // a o něco širší než dřív pro dramatičtější "golden hour" okraj.
+    float twilight = 1.0 - smoothstep(0.0, 0.2, abs(sunDot));
+    vec3 twilightColor = vec3(1.0, 0.42, 0.12);
     color += twilightColor * twilight * twilightStrength;
 
-    // jemné zvýšení sytosti barev pro živější, "atraktivnější" vzhled
+    // Výraznější zvýšení sytosti barev pro živější, "sexy" vzhled (sytější
+    // modré oceány, zelenější/zlatější kontinenty) - bez posunu jasu.
     float luma = dot(color, vec3(0.299, 0.587, 0.114));
-    color = mix(vec3(luma), color, 1.18);
+    color = mix(vec3(luma), color, 1.4);
+
+    // Velmi jemné "S-křivkové" zesílení kontrastu, ať den nepůsobí ploše.
+    color = clamp(color, 0.0, 1.0);
+    color = color * color * (3.0 - 2.0 * color) * 0.15 + color * 0.85;
 
     gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
   }
@@ -91,7 +103,7 @@ export const cloudsFragmentShader = /* glsl */ `
     // v noci jemně viditelné "měsíčním svitem" nasvícené mraky, ne skoro
     // neviditelné - a mírně chladnější (namodralý) tón oproti dennímu bílému
     float alpha = cloudLum * opacity * mix(0.55, 1.0, lightFactor);
-    vec3 cloudColor = mix(vec3(0.78, 0.85, 0.98), vec3(1.0), lightFactor);
+    vec3 cloudColor = mix(vec3(0.8, 0.87, 1.0), vec3(1.0), lightFactor);
 
     gl_FragColor = vec4(cloudColor, alpha);
   }
@@ -116,7 +128,18 @@ export const skyFragmentShader = /* glsl */ `
     float lon = atan(-dir.z, dir.x);
     float u = (lon + 3.14159265) / (2.0 * 3.14159265);
     float v = 0.5 - lat / 3.14159265;
-    gl_FragColor = vec4(texture2D(starsTexture, vec2(u, v)).rgb, 1.0);
+
+    vec3 stars = texture2D(starsTexture, vec2(u, v)).rgb;
+    // Zdrojová textura hvězd je dost tmavá/nekontrastní - zesílíme jas a
+    // kontrast (gamma), ať jsou hvězdy v okolním "kusu vesmíru" kolem
+    // glóbu skutečně vidět, místo aby splynuly s černým pozadím.
+    stars = pow(stars * 1.8, vec3(0.75));
+    // Jemný hluboce modrý "space" podtón místo čisté černé - hlubší, ne
+    // ploché černo mezi hvězdami.
+    vec3 spaceTint = vec3(0.015, 0.022, 0.045);
+    vec3 color = max(stars, spaceTint);
+
+    gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
   }
 `;
 
