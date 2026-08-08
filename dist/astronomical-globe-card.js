@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.3.5
+ * @version 0.3.6
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -41,15 +41,23 @@
  * vycházet z (velmi tmavé/nekontrastní) textury `stars.jpg` a generuje se
  * procedurálně v shaderu (hvězdy + barevná modro-purpurová mlhovina).
  * Viz earth-shaders.js pro detaily barevného ladění.
+ *
+ * v0.3.6: oprava reálné regrese z v0.3.5 - v `earth-shaders.js` byl v GLSL
+ * komentáři uvnitř template literalu omylem párový znak backtick (`` ` ``)
+ * kolem slova nightAmbient, což v JS předčasně ukončilo template literal
+ * a rozbilo syntaxi celého souboru → celá karta spadla už při načtení
+ * modulu ("Custom element doesn't exist"). `node --check` na .js soubor
+ * bez ESM kontextu to bohužel nezachytilo (parsuje ho shovívavěji než
+ * skutečný prohlížečový ESM loader) - ověřeno teď reálným ESM importem.
  */
 
-// POZOR: verze v query stringu níže (?v=0.3.5) je záměrně napsaná natvrdo,
+// POZOR: verze v query stringu níže (?v=0.3.6) je záměrně napsaná natvrdo,
 // NE přes proměnnou/template literal - specifikátor static importu musí být
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.3.5';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.5';
+import * as THREE from './lib/three.module.min.js?v=0.3.6';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.6';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -59,9 +67,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.3.5';
+} from './lib/earth-shaders.js?v=0.3.6';
 
-const CARD_VERSION = '0.3.5';
+const CARD_VERSION = '0.3.6';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;

@@ -60,7 +60,7 @@ export const earthFragmentShader = /* glsl */ `
     // NASA Black Marble - OCEÁN je v této textuře čistě černý (0,0,0),
     // pevnina/města jsou nenulové. Viz poznámka v hlavičce souboru: proto
     // se násobící "jas" dole neuplatní na oceánu vůbec - to řeší až
-    // `nightAmbient` níž.
+    // proměnná nightAmbient níž.
     vec3 nightRaw = texture2D(nightTexture, vUv).rgb;
 
     // "Jas" (exposure) cíleně zesiluje hlavně SVĚTLA MĚST. Měkká komprese
