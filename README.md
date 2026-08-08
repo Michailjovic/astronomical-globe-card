@@ -63,9 +63,11 @@ quality: medium                # 'low' | 'medium' | 'high'
 show_clouds: true
 show_moon: true
 show_sun_marker: true
+show_stars: true              # hvězdné pozadí za glóbem
 show_countdown: true          # "do východu/západu: X h Y min"
 show_day_length: true         # "Délka dne: X h Y min"
 rotation_wobble: true         # jemná živá animace kamery kolem tvé polohy
+brightness: 1.35              # 0.5-5, zesiluje hlavně světla měst (viz editor)
 accent_color: ""              # volitelná CSS barva
 ```
 
@@ -109,8 +111,10 @@ Kvalitu lze změnit kdykoli přes vizuální editor karty i za běhu.
 
 - **Kód karty** (`dist/astronomical-globe-card.js`, `dist/lib/astro.js`,
   `dist/lib/earth-shaders.js`): MIT, viz [LICENSE](LICENSE).
-- **Textury Země a Měsíce**: [Solar System Scope](https://www.solarsystemscope.com/textures/)
+- **Denní textura Země, Měsíc, mraky, hvězdné pozadí**: [Solar System Scope](https://www.solarsystemscope.com/textures/)
   (CC BY 4.0 – „Solar System Scope“).
+- **Noční textura Země**: [NASA Black Marble 2016](https://svs.gsfc.nasa.gov/30876/)
+  (NASA Scientific Visualization Studio, veřejná doména), data VIIRS/Suomi NPP.
 - **three.js**: MIT licence, vendorováno lokálně v
   `dist/lib/three.module.min.js` (v0.160.0), žádná závislost na CDN za běhu.
 - Astronomické výpočty (`dist/lib/astro.js`) jsou vlastní implementace
