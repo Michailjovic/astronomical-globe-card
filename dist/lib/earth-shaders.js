@@ -40,23 +40,31 @@ export const earthFragmentShader = /* glsl */ `
     float dayMix = smoothstep(-0.12, 0.12, sunDot);
 
     vec3 dayColor = texture2D(dayTexture, vUv).rgb;
-    vec3 nightColor = texture2D(nightTexture, vUv).rgb * nightBrightness;
+    vec3 nightRaw = texture2D(nightTexture, vUv).rgb;
 
-    // Aditivní ambientní "zemský svit" pro noční stranu. Bez tohoto nemá
-    // multiplikativní exposure/jas prakticky žádný viditelný efekt na
-    // téměř černé pixely oceánu/pevniny bez měst (0 * cokoliv = 0) - jas
-    // by se pak projevil jen na už tak jasných světlech měst (clip do bíla).
-    nightColor += vec3(0.02, 0.032, 0.055);
+    // "Jas" (exposure) cíleně zesiluje SVĚTLA MĚST (texturová data jsou
+    // téměř nulová mimo osvětlené oblasti), takže tmavý oceán/pevninu to
+    // nezabahní do hněda - naopak čím vyšší jas, tím sytější a výraznější
+    // světla, podobně jako na reálných nočních satelitních snímcích.
+    vec3 nightLights = nightRaw * nightBrightness * exposure;
 
+    // Malé, na exposure NEZÁVISLÉ ambientní podsvícení ("zemský svit"), aby
+    // oceán/pevnina nebyly naprosto černé i bez měst - pevná hodnota, ať
+    // vysoký jas nezaplaví celou noční stranu.
+    vec3 nightAmbient = vec3(0.008, 0.014, 0.026);
+
+    vec3 nightColor = nightLights + nightAmbient;
     vec3 color = mix(nightColor, dayColor, dayMix);
 
-    // teplá soumraková záře podél terminátoru
-    float twilight = 1.0 - smoothstep(0.0, 0.22, abs(sunDot));
+    // Teplá soumraková záře podél terminátoru - pevný příspěvek nezávislý
+    // na exposure, ať při vysokém jasu nepřebije barvy do hněda.
+    float twilight = 1.0 - smoothstep(0.0, 0.16, abs(sunDot));
     vec3 twilightColor = vec3(1.0, 0.45, 0.15);
     color += twilightColor * twilight * twilightStrength;
 
-    // celkové zesvětlení pro lepší čitelnost na dashboardu (nastavitelné)
-    color *= exposure;
+    // jemné zvýšení sytosti barev pro živější, "atraktivnější" vzhled
+    float luma = dot(color, vec3(0.299, 0.587, 0.114));
+    color = mix(vec3(luma), color, 1.18);
 
     gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
   }
@@ -104,3 +112,7 @@ export const atmosphereFragmentShader = /* glsl */ `
     gl_FragColor = vec4(glowColor, 1.0) * intensity * glowIntensity;
   }
 `;
+
+// Poznámka: atmosférická záře je záměrně vizuálně "levná" a stabilní
+// (glowIntensity se nastavuje z JS podle configu, viz astronomical-globe-card.js),
+// aby modrý okraj zůstal viditelný a konzistentní bez ohledu na hodnotu jasu.

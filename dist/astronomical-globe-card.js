@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.2.2
+ * @version 0.2.3
  *
  * POZOR (cache): vnořené importy (lib/*.js) i textury se natvrdo verzují
  * query parametrem `?v=CARD_VERSION` (viz níže). Prohlížeče a HA service
@@ -20,7 +20,7 @@
  * vynutí čerstvé stažení úplně všeho.
  */
 
-const CARD_VERSION = '0.2.2';
+const CARD_VERSION = '0.2.3';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 
@@ -325,8 +325,14 @@ class AstronomicalGlobeCard extends HTMLElement {
     if (this._config.accent_color) {
       this.style.setProperty('--agc-accent', this._config.accent_color);
     }
+    const brightness = this._config.brightness || DEFAULT_CONFIG.brightness;
     if (this._earthUniforms) {
-      this._earthUniforms.exposure.value = this._config.brightness || DEFAULT_CONFIG.brightness;
+      this._earthUniforms.exposure.value = brightness;
+    }
+    if (this._atmosphereUniforms) {
+      // mírně provázané s jasem, ať modrý okraj nezůstává "utopený" při
+      // vysokých hodnotách jasu, ale zůstává jemné a stabilní
+      this._atmosphereUniforms.glowIntensity.value = 1.1 * (1 + (brightness - 1) * 0.25);
     }
   }
 
@@ -387,12 +393,13 @@ class AstronomicalGlobeCard extends HTMLElement {
 
     // -- Atmosféra (Fresnel záře) ---------------------------------------------
     const atmosphereGeometry = new THREE.SphereGeometry(EARTH_RADIUS * 1.045, 64, 64);
+    this._atmosphereUniforms = {
+      glowColor: { value: new THREE.Color(0x4da6ff) },
+      glowPower: { value: 2.6 },
+      glowIntensity: { value: 1.1 },
+    };
     const atmosphereMaterial = new THREE.ShaderMaterial({
-      uniforms: {
-        glowColor: { value: new THREE.Color(0x4da6ff) },
-        glowPower: { value: 2.6 },
-        glowIntensity: { value: 1.1 },
-      },
+      uniforms: this._atmosphereUniforms,
       vertexShader: atmosphereVertexShader,
       fragmentShader: atmosphereFragmentShader,
       side: THREE.BackSide,
@@ -776,7 +783,7 @@ const EDITOR_SCHEMA = [
   { name: 'rotation_wobble', selector: { boolean: {} } },
   {
     name: 'brightness',
-    selector: { number: { min: 0.7, max: 2.5, step: 0.05, mode: 'slider' } },
+    selector: { number: { min: 0.5, max: 5, step: 0.1, mode: 'slider' } },
   },
   { name: 'accent_color', selector: { text: {} } },
 ];
