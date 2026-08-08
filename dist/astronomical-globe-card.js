@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.1.1
+ * @version 0.2.0
  */
 
 import * as THREE from './lib/three.module.min.js';
@@ -24,7 +24,7 @@ import {
   atmosphereFragmentShader,
 } from './lib/earth-shaders.js';
 
-const CARD_VERSION = '0.1.1';
+const CARD_VERSION = '0.2.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const EARTH_RADIUS = 1;
 const CAMERA_DISTANCE = 2.55;
@@ -799,7 +799,18 @@ class AstronomicalGlobeCardEditor extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
-    this.shadowRoot.innerHTML = `<style>ha-form { display:block; padding: 8px 0; }</style>`;
+    this.shadowRoot.innerHTML = `
+      <style>
+        ha-form { display: block; padding: 8px 0; }
+        .agc-editor-version {
+          display: flex; justify-content: flex-end; align-items: center;
+          gap: 6px; padding: 0 2px 6px 2px; font-size: 11px;
+          color: var(--secondary-text-color, #888); opacity: 0.8;
+          font-family: var(--code-font-family, monospace);
+        }
+      </style>
+      <div class="agc-editor-version">Astronomical Globe Card v${CARD_VERSION}</div>
+    `;
     const form = document.createElement('ha-form');
     form.hass = this._hass;
     form.data = this._config;
