@@ -53,15 +53,30 @@
  * v konfiguraci a posuvníky ve vizuálním editoru - místo aby byly
  * zadrátované jako konstanty v shaderu a měnily se jen přes zásah do kódu.
  * Viz earth-shaders.js pro detaily jednotlivých uniforem.
+ *
+ * v0.3.9 - SKUTEČNÁ PŘÍČINA "ztmavovacího filtru přes celou kartu": three.js
+ * od r152 defaultně zapíná automatickou barevnou správu (ColorManagement) -
+ * textury označené jako SRGBColorSpace se při čtení v shaderu tiše dekódují
+ * sRGB->lineární a `new THREE.Color(hex)` dělá totéž. To je v pořádku pro
+ * built-in materiály (ty mají vestavěný zpětný převod na výstupu), ale naše
+ * VLASTNÍ ShaderMaterial (Země/mraky/atmosféra, viz earth-shaders.js) žádný
+ * zpětný převod nedělaly - výsledek byl systematicky tmavší/míň sytý, než
+ * hodnoty v kódu/texturách napovídají (ověřeno: hex 0x57c8ff vycházel jako
+ * [0.10, 0.58, 1.00] místo [0.34, 0.78, 1.00]). Opraveno: den/noc/mraky
+ * textury teď mají NoColorSpace (syrové hodnoty 1:1) a atmosférická barva
+ * se čte přes setHex(hex, NoColorSpace). Sluneční záře a GPS značka měly
+ * naopak opačný problém (built-in SpriteMaterial + textura bez colorSpace
+ * = zbytečný DVOJITÝ převod na výstupu = vymytý/mlhavý vzhled) - opraveno
+ * přidáním SRGBColorSpace na jejich canvas textury.
  */
 
-// POZOR: verze v query stringu níže (?v=0.3.8) je záměrně napsaná natvrdo,
+// POZOR: verze v query stringu níže (?v=0.3.9) je záměrně napsaná natvrdo,
 // NE přes proměnnou/template literal - specifikátor static importu musí být
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.3.8';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.8';
+import * as THREE from './lib/three.module.min.js?v=0.3.9';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.9';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -71,9 +86,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.3.8';
+} from './lib/earth-shaders.js?v=0.3.9';
 
-const CARD_VERSION = '0.3.8';
+const CARD_VERSION = '0.3.9';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
