@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.3.9
+ * @version 0.3.10
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -68,15 +68,28 @@
  * naopak opačný problém (built-in SpriteMaterial + textura bez colorSpace
  * = zbytečný DVOJITÝ převod na výstupu = vymytý/mlhavý vzhled) - opraveno
  * přidáním SRGBColorSpace na jejich canvas textury.
+ *
+ * v0.3.10 - SKUTEČNÁ (a tentokrát opravdu poslední) příčina "průsvitného
+ * černého skla přes celou kartu", které v0.3.9 nevyřešila: CSS pravidlo
+ * ".agc-error" (nastavuje "display: flex") má STEJNOU specificitu jako
+ * výchozí prohlížečové pravidlo "[hidden] { display: none }" - a autorské
+ * pravidlo v cascade vyhrává nad UA výchozím, takže atribut `hidden`
+ * (přepínaný v JS) neměl žádný vizuální efekt. Poloprůhledná černá vrstva
+ * chybové hlášky (rgba(0,0,0,0.75)) tak ležela nastálé přes celým plátnem
+ * úplně nezávisle na jasu/sytosti/kontrastu - proto žádné z ladění barev
+ * v0.3.1-0.3.9 vizuálně nic nezměnilo. Ověřeno pixel-přesně headless
+ * renderem (barva pixelu Austrálie/oceánu teď 1:1 odpovídá zdrojové
+ * textuře, dřív byla systematicky ~4x tmavší = přesně 1-0.75). Oprava:
+ * přidáno ".agc-error[hidden] { display: none; }" s vyšší specificitou.
  */
 
-// POZOR: verze v query stringu níže (?v=0.3.9) je záměrně napsaná natvrdo,
+// POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
 // NE přes proměnnou/template literal - specifikátor static importu musí být
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.3.9';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.9';
+import * as THREE from './lib/three.module.min.js?v=0.3.10';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.10';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -86,9 +99,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.3.9';
+} from './lib/earth-shaders.js?v=0.3.10';
 
-const CARD_VERSION = '0.3.9';
+const CARD_VERSION = '0.3.10';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -462,6 +475,19 @@ class AstronomicalGlobeCard extends HTMLElement {
         position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
         color: #ff8a80; background: rgba(0,0,0,0.75); font-size: 13px; text-align: center; padding: 16px;
       }
+      /* SKUTEČNÁ PŘÍČINA "tmavého skla přes celou kartu": autorské pravidlo
+         ".agc-error" s "display: flex" má stejnou specificitu jako výchozí
+         UA pravidlo prohlížeče "[hidden]" s "display: none", a autorské
+         pravidlo v cascade vyhrává - takže atribut hidden (přepínaný v JS
+         přes this._els.error.hidden = true/false) neměl ŽÁDNÝ vizuální
+         efekt a tahle poloprůhledná černá vrstva (rgba(0,0,0,0.75), proto
+         ten "průsvitný černý filtr") ležela NASTÁLE přes celým plátnem,
+         nezávisle na jakémkoli nastavení jasu/sytosti/kontrastu. Tohle
+         pravidlo má vyšší specificitu (class+atribut > class) a vrací
+         hidden atributu jeho normální chování. Ověřeno headless renderem:
+         bez téhle opravy byl každý pixel plátna násoben ~0.25 (= 1 - 0.75
+         alpha černého překryvu), rovnoměrně napříč celým obrazem. */
+      .agc-error[hidden] { display: none; }
     `;
   }
 
