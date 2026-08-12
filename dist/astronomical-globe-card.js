@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.5.2
+ * @version 0.6.0
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -130,6 +130,15 @@
  * u jednorázového klampu na PŘÍRŮSTKU by to jinak mohlo projít nepozorovaně.
  * Vodorovná osa (azimut) žádný klamp nemá a nepotřebuje ho - otáčení kolem
  * svislé osy Y úhel od pólu vůbec nemění, takže je (správně) neomezená.
+ *
+ * v0.6.0 - dvě nová tlačítka nad glóbem (viditelná jen když je zapnuté
+ * `manual_rotation`): (1) "vrátit domů" - okamžitě vynutí stejnou plynulou
+ * animaci návratu na domovskou polohu, jakou dřív spouštěl jen 5s
+ * automatický idle timeout; (2) zámek - vypne/zapne ten automatický
+ * 5s návrat, takže si uživatel může glóbus nechat natočený libovolně
+ * dlouho a vrátit ho ručně tlačítkem (1), až bude chtít. Obě tlačítka
+ * sedí nad canvasem (vyšší z-index), takže klik na ně nezasáhne zároveň
+ * i drag-rotaci pod nimi.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -137,8 +146,8 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.5.2';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.5.2';
+import * as THREE from './lib/three.module.min.js?v=0.6.0';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.6.0';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -148,9 +157,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.5.2';
+} from './lib/earth-shaders.js?v=0.6.0';
 
-const CARD_VERSION = '0.5.2';
+const CARD_VERSION = '0.6.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -439,6 +448,27 @@ class AstronomicalGlobeCard extends HTMLElement {
               <div class="agc-date"></div>
               <div class="agc-time"></div>
             </div>
+            <div class="agc-view-controls">
+              <button type="button" class="agc-btn agc-btn-reset" title="Vrátit pohled na domovskou polohu" aria-label="Vrátit pohled na domovskou polohu">
+                <svg viewBox="0 0 24 24" width="16" height="16">
+                  <circle cx="12" cy="12" r="5" fill="none" stroke="currentColor" stroke-width="2"/>
+                  <line x1="12" y1="1" x2="12" y2="5" stroke="currentColor" stroke-width="2"/>
+                  <line x1="12" y1="19" x2="12" y2="23" stroke="currentColor" stroke-width="2"/>
+                  <line x1="1" y1="12" x2="5" y2="12" stroke="currentColor" stroke-width="2"/>
+                  <line x1="19" y1="12" x2="23" y2="12" stroke="currentColor" stroke-width="2"/>
+                </svg>
+              </button>
+              <button type="button" class="agc-btn agc-btn-lock" title="Zastavit automatický návrat pohledu" aria-label="Zastavit automatický návrat pohledu" aria-pressed="false">
+                <svg class="agc-icon-unlocked" viewBox="0 0 24 24" width="16" height="16">
+                  <rect x="5" y="11" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>
+                  <path d="M8 11V7a4 4 0 0 1 7.2-2.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+                <svg class="agc-icon-locked" viewBox="0 0 24 24" width="16" height="16" hidden>
+                  <rect x="5" y="11" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>
+                  <path d="M8 11V7a4 4 0 0 1 8 0v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+              </button>
+            </div>
             <div class="agc-corner agc-corner-bl" title="Fáze Měsíce">
               <canvas class="agc-moon-icon" width="44" height="44"></canvas>
             </div>
@@ -470,11 +500,17 @@ class AstronomicalGlobeCard extends HTMLElement {
       moonIcon: this.shadowRoot.querySelector('.agc-moon-icon'),
       orbitEarth: this.shadowRoot.querySelector('.agc-orbit-earth'),
       error: this.shadowRoot.querySelector('.agc-error'),
+      viewControls: this.shadowRoot.querySelector('.agc-view-controls'),
+      resetBtn: this.shadowRoot.querySelector('.agc-btn-reset'),
+      lockBtn: this.shadowRoot.querySelector('.agc-btn-lock'),
+      lockIconUnlocked: this.shadowRoot.querySelector('.agc-icon-unlocked'),
+      lockIconLocked: this.shadowRoot.querySelector('.agc-icon-locked'),
     };
 
     this._clock = new THREE.Clock();
     this._wobbleSeed = Math.random() * 1000;
     this._bindDragRotation();
+    this._bindViewControls();
 
     try {
       this._initThree();
@@ -523,6 +559,10 @@ class AstronomicalGlobeCard extends HTMLElement {
       if (!this._config.manual_rotation) return;
       if (ev.pointerType === 'mouse' && ev.button !== 0) return;
       this._dragging = true;
+      // Chycení glóbu rukou vždy zruší čekající požadavek na reset (tlačítko
+      // "vrátit domů") - jinak by po puštění mohl přijít neočekávaný skok
+      // zpět i uprostřed nového tažení.
+      this._resetRequested = false;
       this._dragLastX = ev.clientX;
       this._dragLastY = ev.clientY;
       el.classList.add('agc-dragging');
@@ -589,6 +629,54 @@ class AstronomicalGlobeCard extends HTMLElement {
     };
   }
 
+  /**
+   * Tlačítka "vrátit pohled domů" a "zamknout/odemknout automatický návrat"
+   * (obě jen viditelná, když je `manual_rotation` zapnuté - viz
+   * `_renderStaticParts()`). `_autoReturnEnabled` řídí, jestli po nečinnosti
+   * proběhne automatický návrat (`MANUAL_IDLE_TIMEOUT` v `_frame()`);
+   * `_resetRequested` vynutí stejnou plynulou animaci návratu OKAMŽITĚ,
+   * bez ohledu na to, jestli je automatický návrat zamknutý.
+   */
+  _bindViewControls() {
+    const resetBtn = this._els.resetBtn;
+    const lockBtn = this._els.lockBtn;
+    this._autoReturnEnabled = true;
+    this._resetRequested = false;
+
+    const onReset = (ev) => {
+      ev.preventDefault();
+      if (this._manualAz === 0 && this._manualEl === 0) {
+        // Není co vracet - nenechat "viset" požadavek, který by se jinak
+        // spustil až při příštím náhodném natočení (viz komentář u
+        // onPointerDown o čištění _resetRequested).
+        this._resetRequested = false;
+        return;
+      }
+      this._resetRequested = true;
+      this._lastInteractionT = this._clock.getElapsedTime();
+    };
+    const onLockToggle = (ev) => {
+      ev.preventDefault();
+      this._autoReturnEnabled = !this._autoReturnEnabled;
+      const locked = !this._autoReturnEnabled;
+      lockBtn.classList.toggle('agc-btn-active', locked);
+      lockBtn.setAttribute('aria-pressed', String(locked));
+      lockBtn.title = locked
+        ? 'Automatický návrat pohledu je zastavený - klikni pro zapnutí zpět'
+        : 'Zastavit automatický návrat pohledu';
+      if (this._els.lockIconUnlocked) this._els.lockIconUnlocked.hidden = locked;
+      if (this._els.lockIconLocked) this._els.lockIconLocked.hidden = !locked;
+    };
+
+    resetBtn.addEventListener('click', onReset);
+    lockBtn.addEventListener('click', onLockToggle);
+
+    this._viewControlsUnbind = () => {
+      resetBtn.removeEventListener('click', onReset);
+      lockBtn.removeEventListener('click', onLockToggle);
+    };
+  }
+
   _css() {
     return `
       :host { display: block; }
@@ -650,6 +738,26 @@ class AstronomicalGlobeCard extends HTMLElement {
       .agc-corner-br { right: 14px; bottom: 14px; }
       .agc-orbit-icon { width: 100%; height: 100%; }
 
+      .agc-view-controls {
+        position: absolute; top: 10px; right: 10px; z-index: 3;
+        display: flex; gap: 6px;
+        /* na rozdíl od .agc-overlay-top (pointer-events: none) tahle
+           tlačítka MUSÍ reagovat na klik - jsou ale kreslená nad canvasem
+           (pozdější pořadí v DOM + z-index), takže klik na ně normálně
+           nepropadne dolů na canvas a nespustí zároveň i tažení/rotaci. */
+      }
+      .agc-btn {
+        width: 28px; height: 28px; border-radius: 50%; border: none; padding: 0;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(0,0,0,0.4); color: #fff; opacity: 0.8; cursor: pointer;
+        transition: opacity 0.15s ease, background-color 0.15s ease;
+      }
+      .agc-btn:hover { opacity: 1; background: rgba(0,0,0,0.55); }
+      .agc-btn:active { transform: scale(0.92); }
+      .agc-btn-lock.agc-btn-active {
+        background: var(--agc-accent, #33e6b0); color: #06231a; opacity: 1;
+      }
+
       .agc-error {
         position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
         color: #ff8a80; background: rgba(0,0,0,0.75); font-size: 13px; text-align: center; padding: 16px;
@@ -701,6 +809,12 @@ class AstronomicalGlobeCard extends HTMLElement {
     if (this._markerSprite) {
       const markerSize = cfg.marker_size ?? DEFAULT_CONFIG.marker_size;
       this._markerSprite.scale.set(markerSize, markerSize, 1);
+    }
+    if (this._els.viewControls) {
+      // Tlačítka "vrátit domů"/"zámek" dávají smysl jen když je ruční
+      // otáčení vůbec zapnuté - jinak by natáčet nešlo, takže by neměly co
+      // resetovat/zamykat.
+      this._els.viewControls.style.display = cfg.manual_rotation ? 'flex' : 'none';
     }
   }
 
@@ -1072,14 +1186,20 @@ class AstronomicalGlobeCard extends HTMLElement {
       // Po MANUAL_IDLE_TIMEOUT sekundách nečinnosti se ruční natočení plynule
       // (exponenciální doběh, nezávislý na FPS) vrátí zpět na 0 - ať karta po
       // odložení telefonu/myši nezůstane natočená mimo domovskou polohu.
+      // Dá se to ale zastavit tlačítkem se zámkem (`_autoReturnEnabled`), a
+      // tlačítko "vrátit domů" (`_resetRequested`) tuhle stejnou animaci
+      // vynutí OKAMŽITĚ, nezávisle na zámku i na uplynulém čase nečinnosti.
       if (!this._dragging && (this._manualAz !== 0 || this._manualEl !== 0)) {
         const idleFor = t - this._lastInteractionT;
-        if (idleFor > MANUAL_IDLE_TIMEOUT) {
+        const shouldReturn =
+          this._resetRequested || (this._autoReturnEnabled && idleFor > MANUAL_IDLE_TIMEOUT);
+        if (shouldReturn) {
           const k = 1 - Math.exp(-dt / MANUAL_RETURN_TIME_CONSTANT);
           this._manualAz -= this._manualAz * k;
           this._manualEl -= this._manualEl * k;
           if (Math.abs(this._manualAz) < 0.001) this._manualAz = 0;
           if (Math.abs(this._manualEl) < 0.001) this._manualEl = 0;
+          if (this._manualAz === 0 && this._manualEl === 0) this._resetRequested = false;
         }
       }
       az += this._manualAz;

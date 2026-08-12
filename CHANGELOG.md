@@ -4,6 +4,18 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
+## [0.6.0] - 2026-08-13
+
+### Added
+- Two small buttons above the globe (visible only when `manual_rotation` is
+  on): a "return to home" button that immediately triggers the same smooth
+  return animation the 5s idle timeout uses, and a lock button that
+  turns that automatic 5s return off/on. With the lock engaged you can
+  leave the globe rotated indefinitely and bring it back manually whenever
+  you like via the reset button. Both buttons render above the canvas
+  (higher stacking order) so clicking them doesn't also trigger the
+  drag-rotation underneath.
+
 ## [0.5.2] - 2026-08-13
 
 ### Fixed
