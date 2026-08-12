@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.3.10
+ * @version 0.3.11
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -81,6 +81,17 @@
  * renderem (barva pixelu Austrálie/oceánu teď 1:1 odpovídá zdrojové
  * textuře, dřív byla systematicky ~4x tmavší = přesně 1-0.75). Oprava:
  * přidáno ".agc-error[hidden] { display: none; }" s vyšší specificitou.
+ *
+ * v0.3.11 - oprava "obrázek se nenačte po vstupu do edit módu dashboardu":
+ * `attachShadow()` lze na DOM elementu zavolat jen jednou za celý jeho
+ * život. HA při reorganizaci masonry/sections layoutu (typicky právě při
+ * přepnutí dashboardu do edit módu) běžně znovu použije TENTÝŽ element
+ * (odpojí ho a znovu připojí), a `connectedCallback()` v tom případě volá
+ * `_build()` podruhé na elementu, který už shadow root má - `attachShadow()`
+ * pak vyhodí výjimku ještě PŘED `_initThree()`/`_loadTextures()`, takže se
+ * 3D scéna a textury už nikdy znovu nepostaví a zůstane viset stará,
+ * mezitím `_dispose()`-em uvolněná (mrtvá) shadow DOM bez obrázku. Oprava:
+ * `attachShadow()` volat jen když `this.shadowRoot` ještě neexistuje.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -88,8 +99,8 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.3.10';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.10';
+import * as THREE from './lib/three.module.min.js?v=0.3.11';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.11';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -99,9 +110,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.3.10';
+} from './lib/earth-shaders.js?v=0.3.11';
 
-const CARD_VERSION = '0.3.10';
+const CARD_VERSION = '0.3.11';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -352,7 +363,20 @@ class AstronomicalGlobeCard extends HTMLElement {
   _build() {
     this._built = true;
 
-    this.attachShadow({ mode: 'open' });
+    // POZOR: attachShadow() lze na elementu zavolat jen JEDNOU za celý jeho
+    // život (DOM spec) - podruhé vyhodí "already hosts a shadow tree" a
+    // volání skončí ještě PŘED _initThree()/_loadTextures(), takže se
+    // glóbus už nikdy nepostaví. Home Assistant přitom stejnou instanci
+    // elementu běžně znovu použije (disconnect+reconnect) při reorganizaci
+    // masonry/sections layoutu - typicky právě při přepnutí do edit módu
+    // dashboardu. connectedCallback() proto po dispose() volá _build()
+    // znovu na TÉMŽ elementu, který už shadow root má → bez téhle
+    // podmínky by druhá stavba tiše/neviditelně selhala a karta by zůstala
+    // se starým, už uvolněným (disposed) plátnem bez obrázku. Řešení: shadow
+    // root vytvořit jen když ještě neexistuje, jinak jen přepsat jeho obsah.
+    if (!this.shadowRoot) {
+      this.attachShadow({ mode: 'open' });
+    }
     this.shadowRoot.innerHTML = `
       <style>${this._css()}</style>
       <ha-card>
