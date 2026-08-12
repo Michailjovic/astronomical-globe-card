@@ -4,6 +4,23 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
+## [0.5.2] - 2026-08-13
+
+### Fixed
+- Camera "flipping" to the opposite side of the globe during a long vertical
+  drag. Root cause: the vertical-drag clamp only limited the *increment*
+  (`manualEl`), not the resulting angle from the pole - which is that
+  increment plus the tracked location's own latitude (colatitude). For
+  locations far from the equator (e.g. Prague, ~40° from the north pole),
+  dragging up far enough could rotate the camera past the pole itself onto
+  the opposite hemisphere - a sudden, disorienting jump. The clamp is now
+  computed dynamically from the actual tracked latitude so the resulting
+  angle from the pole always stays within a safe range (8°-172°): the
+  camera can lean right up to the pole but never crosses it. The horizontal
+  (azimuth) drag is unaffected and remains unlimited - orbiting around the
+  vertical axis doesn't change the angle from the pole, so a full/continuous
+  spin is safe there.
+
 ## [0.5.1] - 2026-08-13
 
 ### Fixed

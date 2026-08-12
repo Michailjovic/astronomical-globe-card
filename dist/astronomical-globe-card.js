@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.5.1
+ * @version 0.5.2
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -114,6 +114,22 @@
  * naklánělo kameru přesně opačně, než jak to uživatelé očekávali (přímá
  * manipulace jako u map - tažení nahoru má odhalit pohled "zespoda").
  * Vodorovná osa (azimut) byla v pořádku, opraveno jen znaménko u elevace.
+ *
+ * v0.5.2 - oprava "flipnutí na druhou stranu" při delším svislém tažení:
+ * skutečná příčina byl fixní klamp `manualEl` na ±85°, který omezoval jen
+ * PŘÍRŮSTEK naklonění, ne výsledný úhel kamery od pólu - ten je ale součtem
+ * přírůstku A zeměpisné šířky sledované polohy (colatitude). Pro místa
+ * daleko od rovníku (např. Praha, ~40° od severního pólu) tak šlo tažením
+ * "nahoru" přetočit kameru přes samotný pól na druhou polokouli - najednou
+ * viditelná jiná strana glóbu = ten nahlášený flip. Oprava: klamp se teď
+ * počítá dynamicky podle skutečné zeměpisné šířky domovské/sledované
+ * polohy tak, aby výsledný úhel od pólu nikdy neopustil bezpečný rozsah
+ * [8°, 172°] (`MIN_TILT_THETA`/`MAX_TILT_THETA`) - kamera se maximálně
+ * "opře" těsně o pól, nikdy přes něj nepřeskočí. Ověřeno mnoha drobnými
+ * kroky (simulace skutečného tažení prstem), ne jen jedním velkým skokem -
+ * u jednorázového klampu na PŘÍRŮSTKU by to jinak mohlo projít nepozorovaně.
+ * Vodorovná osa (azimut) žádný klamp nemá a nepotřebuje ho - otáčení kolem
+ * svislé osy Y úhel od pólu vůbec nemění, takže je (správně) neomezená.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -121,8 +137,8 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.5.1';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.5.1';
+import * as THREE from './lib/three.module.min.js?v=0.5.2';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.5.2';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -132,9 +148,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.5.1';
+} from './lib/earth-shaders.js?v=0.5.2';
 
-const CARD_VERSION = '0.5.1';
+const CARD_VERSION = '0.5.2';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -148,6 +164,12 @@ const MOON_RADIUS = 0.16;
 // zpět na sledovanou domovskou polohu (časová konstanta exp. doběhu v _frame()).
 const MANUAL_IDLE_TIMEOUT = 5;
 const MANUAL_RETURN_TIME_CONSTANT = 1.1;
+// Bezpečná zóna pro výsledný úhel kamery od severního pólu (colatitude,
+// 0° = přesně nad severním pólem, 180° = přesně nad jižním) - kamera se do
+// ní nikdy nepustí, ať se vertikálním tažením "nepřehoupne" přes pól na
+// druhou polokouli (viz komentář u `_bindDragRotation`).
+const MIN_TILT_THETA = degToRad(8);
+const MAX_TILT_THETA = degToRad(172);
 // Základní (referenční) hodnota atmosférické záře - config `atmosphere_
 // intensity` ji násobí (1.0 = tato hodnota).
 const ATMOSPHERE_BASE_INTENSITY = 1.55;
@@ -495,7 +517,7 @@ class AstronomicalGlobeCard extends HTMLElement {
     // že otáčení kolem svislé osy působí přirozeněji než naklápění pólů).
     const SENS_AZ = 0.012;
     const SENS_EL = 0.008;
-    const MAX_EL = degToRad(85); // těsně pod pólem, ať kamera "nepřeskočí" na druhou stranu
+    const FALLBACK_MAX_EL = degToRad(85); // použije se jen než je známá domovská poloha
 
     const onPointerDown = (ev) => {
       if (!this._config.manual_rotation) return;
@@ -519,7 +541,28 @@ class AstronomicalGlobeCard extends HTMLElement {
       // pohled a viděl víc zespoda (glóbus se opticky posune nahoru pod
       // prstem), přesně jak to dělá touch-drag na mapách. Bez mínusu to bylo
       // obráceně (nahlášeno jako "inverzní").
-      this._manualEl = Math.max(-MAX_EL, Math.min(MAX_EL, this._manualEl - dy * SENS_EL));
+      let newEl = this._manualEl - dy * SENS_EL;
+      // SKUTEČNÁ PŘÍČINA "flipnutí na druhou stranu při delším tažení nahoru/
+      // dolů": starý fixní klamp `±85°` omezoval jen PŘÍRŮSTEK (`el`), ne
+      // výsledný úhel od pólu - ten je ale součtem přírůstku A vlastní
+      // "šířky" domovské polohy (colatitude, úhel od severního pólu). Pro
+      // Prahu (lat ~50°, colatitude ~40°) tak `el=+85°` posune kameru na
+      // celkových ~40-85 = -45°, tedy PŘES severní pól na druhou polokouli -
+      // najednou jiná délka/otočená strana glóbu = přesně ten "flip".
+      // Oprava: klampovat rovnou VÝSLEDNÝ úhel od pólu (na základě skutečné
+      // zeměpisné šířky sledované polohy), ne izolovaný přírůstek - tím se
+      // klamp přizpůsobí každé poloze a pól se nikdy nepřekročí. Vodorovná
+      // osa (azimut) žádný takový problém nemá - otáčení kolem svislé osy
+      // Y šířku od pólu nemění, proto může být (a je) neomezené/nekonečné.
+      if (this._location && typeof this._location.lat === 'number') {
+        const thetaHome = degToRad(90 - this._location.lat);
+        const minEl = MIN_TILT_THETA - thetaHome;
+        const maxEl = MAX_TILT_THETA - thetaHome;
+        newEl = Math.max(minEl, Math.min(maxEl, newEl));
+      } else {
+        newEl = Math.max(-FALLBACK_MAX_EL, Math.min(FALLBACK_MAX_EL, newEl));
+      }
+      this._manualEl = newEl;
       this._lastInteractionT = this._clock.getElapsedTime();
     };
     const endDrag = (ev) => {
