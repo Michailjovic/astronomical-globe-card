@@ -4,7 +4,16 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
-## [Unreleased] - 0.5.0
+## [0.5.1] - 2026-08-13
+
+### Fixed
+- Inverted vertical drag axis from 0.5.0 - dragging up/down tilted the
+  camera the opposite way from what felt natural (direct-manipulation
+  convention: dragging up should reveal more of the view from below, like
+  dragging a map). The horizontal axis was correct; only the vertical sign
+  was flipped.
+
+## [0.5.0] - 2026-08-13
 
 ### Added
 - Manual globe rotation by dragging the canvas with mouse or touch

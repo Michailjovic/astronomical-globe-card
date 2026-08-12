@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.5.0
+ * @version 0.5.1
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -109,6 +109,11 @@
  * dotykem přímo na glóbu už nejde scrollovat skrz kartu, mimo kartu ano).
  * Po ~5 s nečinnosti se natočení plynule (frame-rate nezávislý exp. doběh)
  * vrátí zpět na sledovanou polohu.
+ *
+ * v0.5.1 - oprava obrácené vertikální osy z v0.5.0: tažení nahoru/dolů
+ * naklánělo kameru přesně opačně, než jak to uživatelé očekávali (přímá
+ * manipulace jako u map - tažení nahoru má odhalit pohled "zespoda").
+ * Vodorovná osa (azimut) byla v pořádku, opraveno jen znaménko u elevace.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -116,8 +121,8 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.5.0';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.5.0';
+import * as THREE from './lib/three.module.min.js?v=0.5.1';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.5.1';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -127,9 +132,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.5.0';
+} from './lib/earth-shaders.js?v=0.5.1';
 
-const CARD_VERSION = '0.5.0';
+const CARD_VERSION = '0.5.1';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -508,7 +513,13 @@ class AstronomicalGlobeCard extends HTMLElement {
       this._dragLastX = ev.clientX;
       this._dragLastY = ev.clientY;
       this._manualAz -= dx * SENS_AZ;
-      this._manualEl = Math.max(-MAX_EL, Math.min(MAX_EL, this._manualEl + dy * SENS_EL));
+      // POZOR: znaménko je záměrně obrácené oproti "matematické" ose Y
+      // obrazovky (dy roste směrem DOLŮ). Chceme přímou manipulaci - tažení
+      // prstem/myší NAHORU má naklonit kameru tak, jako by uživatel "zvedal"
+      // pohled a viděl víc zespoda (glóbus se opticky posune nahoru pod
+      // prstem), přesně jak to dělá touch-drag na mapách. Bez mínusu to bylo
+      // obráceně (nahlášeno jako "inverzní").
+      this._manualEl = Math.max(-MAX_EL, Math.min(MAX_EL, this._manualEl - dy * SENS_EL));
       this._lastInteractionT = this._clock.getElapsedTime();
     };
     const endDrag = (ev) => {
