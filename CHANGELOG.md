@@ -4,7 +4,23 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
-## [Unreleased] - 0.4.0
+## [Unreleased] - 0.5.0
+
+### Added
+- Manual globe rotation by dragging the canvas with mouse or touch
+  (`manual_rotation` config option, on by default). Implemented as an
+  accumulated azimuth/elevation offset on top of the existing camera-direction
+  math (same approach as `rotation_wobble`), so it coexists cleanly with
+  home-location tracking and the wobble animation — wobble is suppressed
+  during an active drag so it doesn't fight the gesture. The canvas uses
+  `touch-action: none` so mobile browsers treat the drag as rotation instead
+  of a page scroll (same trade-off as the HA map card: touching the globe
+  itself no longer scrolls the dashboard through the card, but the rest of
+  the page scrolls normally). After ~5s of inactivity the view eases back to
+  the tracked home location on its own (frame-rate independent exponential
+  return, not a snap).
+
+## [0.4.0] - 2026-08-13
 
 ### Added
 - New `marker_size` config option (slider in the visual editor) to control

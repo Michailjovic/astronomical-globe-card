@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.4.0
+ * @version 0.5.0
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -97,6 +97,18 @@
  * velikost GPS značky domovské/sledované polohy na povrchu glóbu dřív byla
  * napevno 0.1 (natvrdo v kódu), teď je nastavitelná (výchozí hodnota
  * beze změny, takže stávající konfigurace vypadají stejně jako dřív).
+ *
+ * v0.5.0 - ruční otáčení glóbem tažením myší/prstem po canvasu (config
+ * `manual_rotation`, výchozí zapnuto). Implementováno jako akumulovaný
+ * azimut/elevace navrch stávajícího výpočtu směru kamery (stejný princip
+ * jako `rotation_wobble`), ne jako přepis kamery/OrbitControls - proto se
+ * to dobře snáší se sledováním domovské polohy i s wobble efektem (wobble
+ * se během aktivního tažení potlačí, ať se s gestem nepere). `.agc-canvas`
+ * má `touch-action: none`, jinak by mobilní prohlížeč tažení interpretoval
+ * jako scroll stránky místo rotace (stejný kompromis jako HA mapová karta -
+ * dotykem přímo na glóbu už nejde scrollovat skrz kartu, mimo kartu ano).
+ * Po ~5 s nečinnosti se natočení plynule (frame-rate nezávislý exp. doběh)
+ * vrátí zpět na sledovanou polohu.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -104,8 +116,8 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.4.0';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.4.0';
+import * as THREE from './lib/three.module.min.js?v=0.5.0';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.5.0';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -115,9 +127,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.4.0';
+} from './lib/earth-shaders.js?v=0.5.0';
 
-const CARD_VERSION = '0.4.0';
+const CARD_VERSION = '0.5.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -126,6 +138,11 @@ const EARTH_RADIUS = 1;
 const CAMERA_DISTANCE = 3.2;
 const MOON_ORBIT_RADIUS = 2.5;
 const MOON_RADIUS = 0.16;
+// Ruční otáčení tažením (config `manual_rotation`) - po tolika sekundách
+// nečinnosti od posledního pohybu prstem/myší se karta začne plynule vracet
+// zpět na sledovanou domovskou polohu (časová konstanta exp. doběhu v _frame()).
+const MANUAL_IDLE_TIMEOUT = 5;
+const MANUAL_RETURN_TIME_CONSTANT = 1.1;
 // Základní (referenční) hodnota atmosférické záře - config `atmosphere_
 // intensity` ji násobí (1.0 = tato hodnota).
 const ATMOSPHERE_BASE_INTENSITY = 1.55;
@@ -149,6 +166,7 @@ const DEFAULT_CONFIG = {
   show_countdown: true,
   show_day_length: true,
   rotation_wobble: true,
+  manual_rotation: true,
   accent_color: '',
   // -- vzhled/barevnost - všechno níž má svůj posuvník ve vizuálním editoru
   brightness: 1.35, // jas/exposure - hlavně světla měst v noci
@@ -429,6 +447,7 @@ class AstronomicalGlobeCard extends HTMLElement {
 
     this._clock = new THREE.Clock();
     this._wobbleSeed = Math.random() * 1000;
+    this._bindDragRotation();
 
     try {
       this._initThree();
@@ -451,6 +470,71 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._startLoop();
   }
 
+  /**
+   * Ruční otáčení glóbem tažením myší/prstem (config `manual_rotation`).
+   * Nemění samotnou geometrii/kameru přímo - jen akumuluje `_manualAz`/
+   * `_manualEl` (radiány), které `_frame()` přičte k výpočtu směru kamery.
+   * Po puštění se karta po chvíli nečinnosti sama plynule vrátí zpátky na
+   * sledovanou domovskou polohu (viz `_frame()`).
+   */
+  _bindDragRotation() {
+    const el = this._els.canvas;
+    this._manualAz = 0;
+    this._manualEl = 0;
+    this._dragging = false;
+    this._dragLastX = 0;
+    this._dragLastY = 0;
+    this._lastInteractionT = 0;
+
+    // rad/px - horizontální tažení citlivější než vertikální (odpovídá tomu,
+    // že otáčení kolem svislé osy působí přirozeněji než naklápění pólů).
+    const SENS_AZ = 0.012;
+    const SENS_EL = 0.008;
+    const MAX_EL = degToRad(85); // těsně pod pólem, ať kamera "nepřeskočí" na druhou stranu
+
+    const onPointerDown = (ev) => {
+      if (!this._config.manual_rotation) return;
+      if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+      this._dragging = true;
+      this._dragLastX = ev.clientX;
+      this._dragLastY = ev.clientY;
+      el.classList.add('agc-dragging');
+      try { el.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+    };
+    const onPointerMove = (ev) => {
+      if (!this._dragging) return;
+      const dx = ev.clientX - this._dragLastX;
+      const dy = ev.clientY - this._dragLastY;
+      this._dragLastX = ev.clientX;
+      this._dragLastY = ev.clientY;
+      this._manualAz -= dx * SENS_AZ;
+      this._manualEl = Math.max(-MAX_EL, Math.min(MAX_EL, this._manualEl + dy * SENS_EL));
+      this._lastInteractionT = this._clock.getElapsedTime();
+    };
+    const endDrag = (ev) => {
+      if (!this._dragging) return;
+      this._dragging = false;
+      this._lastInteractionT = this._clock.getElapsedTime();
+      el.classList.remove('agc-dragging');
+      try { el.releasePointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+    };
+
+    el.addEventListener('pointerdown', onPointerDown);
+    el.addEventListener('pointermove', onPointerMove);
+    el.addEventListener('pointerup', endDrag);
+    el.addEventListener('pointercancel', endDrag);
+
+    // POZOR: element (canvas) se při _build() vždy vytváří znovu (nový
+    // `shadowRoot.innerHTML`), takže staré listenery zaniknou spolu s ním -
+    // explicitní cleanup tu není nutný, ale referenci schováme pro pořádek.
+    this._dragUnbind = () => {
+      el.removeEventListener('pointerdown', onPointerDown);
+      el.removeEventListener('pointermove', onPointerMove);
+      el.removeEventListener('pointerup', endDrag);
+      el.removeEventListener('pointercancel', endDrag);
+    };
+  }
+
   _css() {
     return `
       :host { display: block; }
@@ -466,7 +550,18 @@ class AstronomicalGlobeCard extends HTMLElement {
         background: radial-gradient(circle at 50% 45%, #0a0f1e 0%, #000 80%);
         overflow: hidden;
       }
-      .agc-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+      .agc-canvas {
+        position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+        /* touch-action: none - bez tohohle by mobilní prohlížeč bral tažení
+           přes canvas jako pokus o scroll stránky a rotaci by "ukradl" pro
+           sebe (rvačka o gesto - žádná rotace by se nezobrazila, jen se
+           odscrolovala stránka). Cena: dotykem přímo na glóbu už nejde
+           scrollovat dashboard skrz kartu (stejný kompromis jako u
+           HA mapové karty) - nad/pod kartou to jde normálně dál. */
+        touch-action: none; -webkit-user-select: none; user-select: none;
+        cursor: grab;
+      }
+      .agc-canvas.agc-dragging { cursor: grabbing; }
 
       .agc-overlay-top {
         position: absolute; top: 14px; left: 18px; right: 18px;
@@ -875,6 +970,8 @@ class AstronomicalGlobeCard extends HTMLElement {
     if (!this._renderer || !this._location) return;
     const now = new Date();
     const t = this._clock.getElapsedTime();
+    const dt = t - (this._lastFrameT ?? t);
+    this._lastFrameT = t;
 
     const sun = getSunPosition(now);
     const sunDirWorld = geoToVector3(sun.lat, sun.lon, 1);
@@ -907,10 +1004,34 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._markerSprite.position.copy(homeDir).multiplyScalar(1.01);
 
     let camDir = homeDir.clone();
-    if (this._config.rotation_wobble) {
+    let az = 0;
+    let el = 0;
+    // Automatická jemná animace - potlačená během aktivního tažení, ať se
+    // nepere s gestem uživatele (5°/3° výchylka je jinak nenápadná, ale
+    // společně s ručním otáčením by to rušilo 1:1 odezvu na prst/myš).
+    if (this._config.rotation_wobble && !this._dragging) {
       const wob = this._wobbleSeed;
-      const az = Math.sin(t * (2 * Math.PI / 300) + wob) * degToRad(5);
-      const el = Math.sin(t * (2 * Math.PI / 420) + wob * 1.7) * degToRad(3);
+      az += Math.sin(t * (2 * Math.PI / 300) + wob) * degToRad(5);
+      el += Math.sin(t * (2 * Math.PI / 420) + wob * 1.7) * degToRad(3);
+    }
+    if (this._config.manual_rotation) {
+      // Po MANUAL_IDLE_TIMEOUT sekundách nečinnosti se ruční natočení plynule
+      // (exponenciální doběh, nezávislý na FPS) vrátí zpět na 0 - ať karta po
+      // odložení telefonu/myši nezůstane natočená mimo domovskou polohu.
+      if (!this._dragging && (this._manualAz !== 0 || this._manualEl !== 0)) {
+        const idleFor = t - this._lastInteractionT;
+        if (idleFor > MANUAL_IDLE_TIMEOUT) {
+          const k = 1 - Math.exp(-dt / MANUAL_RETURN_TIME_CONSTANT);
+          this._manualAz -= this._manualAz * k;
+          this._manualEl -= this._manualEl * k;
+          if (Math.abs(this._manualAz) < 0.001) this._manualAz = 0;
+          if (Math.abs(this._manualEl) < 0.001) this._manualEl = 0;
+        }
+      }
+      az += this._manualAz;
+      el += this._manualEl;
+    }
+    if (az || el) {
       camDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), az);
       const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), camDir).normalize();
       camDir.applyAxisAngle(right, el);
@@ -1100,6 +1221,7 @@ const EDITOR_SCHEMA = [
   { name: 'show_countdown', selector: { boolean: {} } },
   { name: 'show_day_length', selector: { boolean: {} } },
   { name: 'rotation_wobble', selector: { boolean: {} } },
+  { name: 'manual_rotation', selector: { boolean: {} } },
   {
     name: 'brightness',
     selector: { number: { min: 0.5, max: 5, step: 0.1, mode: 'slider' } },
@@ -1151,6 +1273,7 @@ const EDITOR_LABELS = {
   show_countdown: 'Zobrazit odpočet do východu/západu',
   show_day_length: 'Zobrazit délku dne',
   rotation_wobble: 'Jemná animovaná rotace',
+  manual_rotation: 'Ruční otáčení tažením (myš/prst)',
   brightness: 'Jas (světla měst v noci)',
   night_ambient: 'Podsvícení nočního oceánu',
   saturation: 'Sytost barev',
