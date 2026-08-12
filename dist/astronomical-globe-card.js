@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.3.11
+ * @version 0.4.0
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -92,6 +92,11 @@
  * 3D scéna a textury už nikdy znovu nepostaví a zůstane viset stará,
  * mezitím `_dispose()`-em uvolněná (mrtvá) shadow DOM bez obrázku. Oprava:
  * `attachShadow()` volat jen když `this.shadowRoot` ještě neexistuje.
+ *
+ * v0.4.0 - nová konfigurační volba `marker_size` (posuvník v editoru):
+ * velikost GPS značky domovské/sledované polohy na povrchu glóbu dřív byla
+ * napevno 0.1 (natvrdo v kódu), teď je nastavitelná (výchozí hodnota
+ * beze změny, takže stávající konfigurace vypadají stejně jako dřív).
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -99,8 +104,8 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.3.11';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.3.11';
+import * as THREE from './lib/three.module.min.js?v=0.4.0';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.4.0';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -110,9 +115,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.3.11';
+} from './lib/earth-shaders.js?v=0.4.0';
 
-const CARD_VERSION = '0.3.11';
+const CARD_VERSION = '0.4.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -154,6 +159,7 @@ const DEFAULT_CONFIG = {
   cloud_opacity: 0.4, // krytí mraků
   atmosphere_intensity: 1.0, // síla modré atmosférické záře na okraji
   sky_intensity: 1.0, // jas hvězd a mlhoviny v pozadí
+  marker_size: 0.1, // velikost GPS značky domovské/sledované polohy
 };
 
 // ---------------------------------------------------------------------------
@@ -543,6 +549,10 @@ class AstronomicalGlobeCard extends HTMLElement {
     if (this._skyMesh) {
       this._skyMesh.visible = !!cfg.show_stars;
     }
+    if (this._markerSprite) {
+      const markerSize = cfg.marker_size ?? DEFAULT_CONFIG.marker_size;
+      this._markerSprite.scale.set(markerSize, markerSize, 1);
+    }
   }
 
   // -- three.js inicializace -------------------------------------------------
@@ -659,9 +669,10 @@ class AstronomicalGlobeCard extends HTMLElement {
       transparent: true,
     });
     const markerSprite = new THREE.Sprite(markerMaterial);
-    // O trochu větší než dřív (0.09) - kamera je teď dál od glóbu (viz
-    // CAMERA_DISTANCE), takže bez úpravy by značka opticky zdrobněla.
-    markerSprite.scale.set(0.1, 0.1, 1);
+    // Počáteční hodnota - hned po _initThree() ji přepíše _renderStaticParts()
+    // podle cfg.marker_size (posuvník "Velikost GPS značky" v editoru).
+    const initialMarkerSize = cfg.marker_size ?? DEFAULT_CONFIG.marker_size;
+    markerSprite.scale.set(initialMarkerSize, initialMarkerSize, 1);
     earthMesh.add(markerSprite);
     this._markerSprite = markerSprite;
 
@@ -1121,6 +1132,10 @@ const EDITOR_SCHEMA = [
     name: 'sky_intensity',
     selector: { number: { min: 0.2, max: 3, step: 0.1, mode: 'slider' } },
   },
+  {
+    name: 'marker_size',
+    selector: { number: { min: 0.02, max: 0.3, step: 0.01, mode: 'slider' } },
+  },
   { name: 'accent_color', selector: { text: {} } },
 ];
 
@@ -1144,6 +1159,7 @@ const EDITOR_LABELS = {
   cloud_opacity: 'Krytí mraků',
   atmosphere_intensity: 'Síla atmosférické záře',
   sky_intensity: 'Jas hvězd a mlhoviny',
+  marker_size: 'Velikost GPS značky',
   accent_color: 'Barva zvýraznění (CSS, volitelné)',
 };
 
