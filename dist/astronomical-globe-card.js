@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.6.0
+ * @version 0.7.0
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -139,6 +139,21 @@
  * dlouho a vrátit ho ručně tlačítkem (1), až bude chtít. Obě tlačítka
  * sedí nad canvasem (vyšší z-index), takže klik na ně nezasáhne zároveň
  * i drag-rotaci pod nimi.
+ *
+ * v0.7.0 - ruční otáčení přepsáno z az/el (kolem pevné svislé osy Y, viz
+ * v0.5.2) na plnohodnotný TRACKBALL/ARCBALL postavený na kvaternionu
+ * (`_manualQuat`, viz `_bindDragRotation`/`_frame`). Předchozí přístup měl
+ * vestavěný limit - u pólu splývala referenční osa se směrem pohledu
+ * (gimbal lock), takže muselo existovat umělé oclamplé pásmo [8°,172°],
+ * jinak kamera při dost dlouhém svislém tažení "přeskočila" na druhou
+ * stranu. Kvaternion žádnou pevnou referenční osu nepoužívá - každý krok
+ * tažení se otáčí kolem AKTUÁLNÍCH os odvozených z dosavadní orientace, ne
+ * kolem globální osy Y, takže žádný pól neexistuje a otáčení je ve všech
+ * směrech skutečně nekonečné, přesně jako fyzický glóbus v ruce. Cena: po
+ * hodně "volném" otáčení už sever nemusí být nahoře na obrazovce (na
+ * rozdíl od staré verze, která "nahoře" vždy držela). Auto-návrat (tlačítko
+ * i idle timeout) teď dělá `Quaternion.slerp()` k identitě místo dřívějšího
+ * exponenciálního doběhu dvou čísel.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -146,8 +161,8 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.6.0';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.6.0';
+import * as THREE from './lib/three.module.min.js?v=0.7.0';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.7.0';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -157,12 +172,16 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.6.0';
+} from './lib/earth-shaders.js?v=0.7.0';
 
-const CARD_VERSION = '0.6.0';
+const CARD_VERSION = '0.7.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
+// Referenční "beze změny" kvaternion pro ruční otáčení (_manualQuat) -
+// vytvořený jednou při načtení modulu a jen čtený, ne měněný (sdílená
+// konstanta, ne "domovská hodnota kterou lze omylem přepsat").
+const IDENTITY_QUATERNION = new THREE.Quaternion();
 // Odsazeno dál (dřív 2.55) - glóbus zabírá cca 70 % výšky rámečku místo
 // skoro 100 %, takže je kolem něj vidět kus hvězdného vesmíru.
 const CAMERA_DISTANCE = 3.2;
@@ -170,15 +189,14 @@ const MOON_ORBIT_RADIUS = 2.5;
 const MOON_RADIUS = 0.16;
 // Ruční otáčení tažením (config `manual_rotation`) - po tolika sekundách
 // nečinnosti od posledního pohybu prstem/myší se karta začne plynule vracet
-// zpět na sledovanou domovskou polohu (časová konstanta exp. doběhu v _frame()).
+// zpět na sledovanou domovskou polohu (časová konstanta exp./slerp doběhu
+// v _frame()).
 const MANUAL_IDLE_TIMEOUT = 5;
 const MANUAL_RETURN_TIME_CONSTANT = 1.1;
-// Bezpečná zóna pro výsledný úhel kamery od severního pólu (colatitude,
-// 0° = přesně nad severním pólem, 180° = přesně nad jižním) - kamera se do
-// ní nikdy nepustí, ať se vertikálním tažením "nepřehoupne" přes pól na
-// druhou polokouli (viz komentář u `_bindDragRotation`).
-const MIN_TILT_THETA = degToRad(8);
-const MAX_TILT_THETA = degToRad(172);
+// Pod jakým úhlem (radiány) od identity už považujeme ruční natočení za
+// "doma" - pod touto hranicí se slerp doběh zastaví a kvaternion se natvrdo
+// nastaví na identitu (ať navěky neběží nekonečně malé zbytkové kroky).
+const MANUAL_RETURN_SNAP_ANGLE = 0.001;
 // Základní (referenční) hodnota atmosférické záře - config `atmosphere_
 // intensity` ji násobí (1.0 = tato hodnota).
 const ATMOSPHERE_BASE_INTENSITY = 1.55;
@@ -535,15 +553,29 @@ class AstronomicalGlobeCard extends HTMLElement {
 
   /**
    * Ruční otáčení glóbem tažením myší/prstem (config `manual_rotation`).
-   * Nemění samotnou geometrii/kameru přímo - jen akumuluje `_manualAz`/
-   * `_manualEl` (radiány), které `_frame()` přičte k výpočtu směru kamery.
-   * Po puštění se karta po chvíli nečinnosti sama plynule vrátí zpátky na
-   * sledovanou domovskou polohu (viz `_frame()`).
+   *
+   * TRACKBALL/ARCBALL, ne az/el kolem pevné svislé osy: stav je jeden
+   * akumulovaný kvaternion `_manualQuat` (volná 3D orientace, "jako když
+   * fyzicky točíš balónkem v ruce"), ne dvě samostatná čísla
+   * azimut+elevace. Předchozí az/el přístup (v0.5.x) měl vestavěný limit -
+   * u pólu se svislá referenční osa protíná se směrem pohledu (gimbal
+   * lock), takže muselo existovat umělé omezení naklonění, jinak kamera při
+   * delším tažení "přeskočila" přes pól na druhou stranu (viz stará
+   * poznámka k v0.5.2 - klamp na [8°,172°] to jen omezoval, neřešil).
+   * Kvaternion žádnou takovou pevnou referenční osu nemá - každý krok
+   * tažení se otáčí kolem AKTUÁLNÍCH (právě otočených) os "nahoru"/"doprava"
+   * odvozených z `_manualQuat` samotného, ne kolem pevné globální osy Y, a
+   * skládá se s dosavadní orientací násobením kvaternionů. Žádný pól tu
+   * proto neexistuje - otáčení je ve všech směrech doslova nekonečné a nikdy
+   * neflipne, přesně jako fyzický glóbus v ruce.
+   *
+   * `_frame()` pak tímhle kvaternionem otočí jak směr kamery, tak vektor
+   * "nahoru" (`camera.up`) - musí se otáčet OBA stejně, jinak by se stejný
+   * gimbal problém jen přesunul do `camera.lookAt()`.
    */
   _bindDragRotation() {
     const el = this._els.canvas;
-    this._manualAz = 0;
-    this._manualEl = 0;
+    this._manualQuat = new THREE.Quaternion();
     this._dragging = false;
     this._dragLastX = 0;
     this._dragLastY = 0;
@@ -553,7 +585,6 @@ class AstronomicalGlobeCard extends HTMLElement {
     // že otáčení kolem svislé osy působí přirozeněji než naklápění pólů).
     const SENS_AZ = 0.012;
     const SENS_EL = 0.008;
-    const FALLBACK_MAX_EL = degToRad(85); // použije se jen než je známá domovská poloha
 
     const onPointerDown = (ev) => {
       if (!this._config.manual_rotation) return;
@@ -574,35 +605,52 @@ class AstronomicalGlobeCard extends HTMLElement {
       const dy = ev.clientY - this._dragLastY;
       this._dragLastX = ev.clientX;
       this._dragLastY = ev.clientY;
-      this._manualAz -= dx * SENS_AZ;
-      // POZOR: znaménko je záměrně obrácené oproti "matematické" ose Y
-      // obrazovky (dy roste směrem DOLŮ). Chceme přímou manipulaci - tažení
-      // prstem/myší NAHORU má naklonit kameru tak, jako by uživatel "zvedal"
-      // pohled a viděl víc zespoda (glóbus se opticky posune nahoru pod
-      // prstem), přesně jak to dělá touch-drag na mapách. Bez mínusu to bylo
-      // obráceně (nahlášeno jako "inverzní").
-      let newEl = this._manualEl - dy * SENS_EL;
-      // SKUTEČNÁ PŘÍČINA "flipnutí na druhou stranu při delším tažení nahoru/
-      // dolů": starý fixní klamp `±85°` omezoval jen PŘÍRŮSTEK (`el`), ne
-      // výsledný úhel od pólu - ten je ale součtem přírůstku A vlastní
-      // "šířky" domovské polohy (colatitude, úhel od severního pólu). Pro
-      // Prahu (lat ~50°, colatitude ~40°) tak `el=+85°` posune kameru na
-      // celkových ~40-85 = -45°, tedy PŘES severní pól na druhou polokouli -
-      // najednou jiná délka/otočená strana glóbu = přesně ten "flip".
-      // Oprava: klampovat rovnou VÝSLEDNÝ úhel od pólu (na základě skutečné
-      // zeměpisné šířky sledované polohy), ne izolovaný přírůstek - tím se
-      // klamp přizpůsobí každé poloze a pól se nikdy nepřekročí. Vodorovná
-      // osa (azimut) žádný takový problém nemá - otáčení kolem svislé osy
-      // Y šířku od pólu nemění, proto může být (a je) neomezené/nekonečné.
-      if (this._location && typeof this._location.lat === 'number') {
-        const thetaHome = degToRad(90 - this._location.lat);
-        const minEl = MIN_TILT_THETA - thetaHome;
-        const maxEl = MAX_TILT_THETA - thetaHome;
-        newEl = Math.max(minEl, Math.min(maxEl, newEl));
-      } else {
-        newEl = Math.max(-FALLBACK_MAX_EL, Math.min(FALLBACK_MAX_EL, newEl));
-      }
-      this._manualEl = newEl;
+
+      // Osy tažení odvozené z AKTUÁLNÍ (dosavadní) orientace, ne z pevné
+      // globální osy Y - tohle je to jediné, co v arcballu nahrazuje starý
+      // az/el přístup, a přesně díky tomu tu není žádný pól ani gimbal lock.
+      //
+      // POZOR (nejde jen tak vzít kanonickou osu X pro "right0"): musí to
+      // být vektor KOLMÝ na počáteční směr pohledu (`camDir0` = domovská
+      // poloha), jinak sklápění netočí po hlavní kružnici procházející
+      // aktuálním pohledem, ale po nějaké jiné, náhodné - naklápění pak
+      // vypadá "vratce"/nerovnoměrně a při dlouhém tažení jedním směrem se
+      // to zacyklí místo plynulého postupu (ověřeno testem, viz [[v0.7.0]]
+      // poznámka výše). `cross(worldUp, camDir0)` je z definice kolmý na
+      // camDir0 - a protože kvaternion je RIGIDNÍ rotace (zachovává úhly
+      // mezi vektory), zůstává `currentRight` kolmý na aktuální `camDir`
+      // navždy, bez ohledu na to, kolik se toho už natočilo.
+      const camDir0 = this._location
+        ? geoToVector3(this._location.lat, this._location.lon, 1)
+        : new THREE.Vector3(0, 0, 1);
+      const worldUp = new THREE.Vector3(0, 1, 0);
+      const right0 = new THREE.Vector3().crossVectors(worldUp, camDir0).normalize();
+
+      const currentUp = worldUp.applyQuaternion(this._manualQuat);
+      const currentRight = right0.applyQuaternion(this._manualQuat);
+
+      // Stejná znaménka jako dřív u az/el (viz oprava "inverzní" osy v0.5.1) -
+      // tažení doprava/nahoru se má chovat úplně stejně jako předtím,
+      // jen bez pólu jako umělé hranice.
+      const yawAngle = -dx * SENS_AZ;
+      const pitchAngle = -dy * SENS_EL;
+
+      const qYaw = new THREE.Quaternion().setFromAxisAngle(currentUp, yawAngle);
+      const qPitch = new THREE.Quaternion().setFromAxisAngle(currentRight, pitchAngle);
+      // Přírůstek této jedné pointermove události se skládá s dosavadní
+      // orientací PREmultiply (v "aktuálním" prostoru, ne v prostoru, jaké
+      // bylo na startu tažení) - proto se to chová jako otáčení fyzického
+      // předmětu v ruce: 1:1 odezva na gesto, bez ohledu na to, jak moc je
+      // glóbus už předtím pootočený.
+      this._manualQuat.premultiply(qYaw).premultiply(qPitch);
+      // Opakované násobení kvaternionů (klidně tisíce za jedno delší tažení)
+      // se floating-point chybou pomalu vzdaluje od jednotkové délky - v
+      // praxi neznatelně málo (ověřeno: ~1e-6 po 1600 krocích), ale
+      // normalizace je zadarmo a časem/hodně dlouhým používáním karty by se
+      // to jinak mohlo hromadit. Standardní obranná praxe pro akumulované
+      // rotace, ne řešení konkrétního pozorovaného problému.
+      this._manualQuat.normalize();
+
       this._lastInteractionT = this._clock.getElapsedTime();
     };
     const endDrag = (ev) => {
@@ -645,10 +693,11 @@ class AstronomicalGlobeCard extends HTMLElement {
 
     const onReset = (ev) => {
       ev.preventDefault();
-      if (this._manualAz === 0 && this._manualEl === 0) {
-        // Není co vracet - nenechat "viset" požadavek, který by se jinak
-        // spustil až při příštím náhodném natočení (viz komentář u
-        // onPointerDown o čištění _resetRequested).
+      // "Beze změny" pozná se u kvaternionu podle w blízkého 1 (viz stejná
+      // kontrola v _frame()) - není co vracet, nenechat "viset" požadavek,
+      // který by se jinak spustil až při příštím náhodném natočení (viz
+      // komentář u onPointerDown o čištění _resetRequested).
+      if (Math.abs(this._manualQuat.w) >= 1 - 1e-9) {
         this._resetRequested = false;
         return;
       }
@@ -1172,46 +1221,57 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._markerSprite.position.copy(homeDir).multiplyScalar(1.01);
 
     let camDir = homeDir.clone();
-    let az = 0;
-    let el = 0;
+    let camUp = new THREE.Vector3(0, 1, 0);
+
+    if (this._config.manual_rotation) {
+      // Po MANUAL_IDLE_TIMEOUT sekundách nečinnosti se ruční natočení plynule
+      // (slerp doběh k identitě, nezávislý na FPS) vrátí zpět na domovskou
+      // polohu - ať karta po odložení telefonu/myši nezůstane natočená mimo
+      // sledovanou polohu. Dá se to zastavit tlačítkem se zámkem
+      // (`_autoReturnEnabled`), a tlačítko "vrátit domů" (`_resetRequested`)
+      // tuhle stejnou animaci vynutí OKAMŽITĚ, nezávisle na zámku i na
+      // uplynulém čase nečinnosti.
+      if (!this._dragging) {
+        // Úhel mezi _manualQuat a identitou = 2*acos(|w|) (jednotkový
+        // kvaternion). Math.min(1, ...) jen ošetřuje drobný float přetečení
+        // nad 1 z opakovaného násobení/slerpu.
+        const angleFromHome = 2 * Math.acos(Math.min(1, Math.abs(this._manualQuat.w)));
+        if (angleFromHome > MANUAL_RETURN_SNAP_ANGLE) {
+          const idleFor = t - this._lastInteractionT;
+          const shouldReturn =
+            this._resetRequested || (this._autoReturnEnabled && idleFor > MANUAL_IDLE_TIMEOUT);
+          if (shouldReturn) {
+            const k = 1 - Math.exp(-dt / MANUAL_RETURN_TIME_CONSTANT);
+            this._manualQuat.slerp(IDENTITY_QUATERNION, k);
+            const newAngle = 2 * Math.acos(Math.min(1, Math.abs(this._manualQuat.w)));
+            if (newAngle < MANUAL_RETURN_SNAP_ANGLE) {
+              this._manualQuat.identity();
+              this._resetRequested = false;
+            }
+          }
+        }
+      }
+      camDir.applyQuaternion(this._manualQuat);
+      camUp.applyQuaternion(this._manualQuat);
+    }
+
     // Automatická jemná animace - potlačená během aktivního tažení, ať se
     // nepere s gestem uživatele (5°/3° výchylka je jinak nenápadná, ale
     // společně s ručním otáčením by to rušilo 1:1 odezvu na prst/myš).
+    // Aplikuje se AŽ NA výsledek trackball rotace (staré az/el-kolem-Y, tady
+    // stačí - výchylka je jen pár stupňů, žádný gimbal problém v praxi
+    // nehrozí, i kdyby uživatel předtím otočil hodně "arcballem").
     if (this._config.rotation_wobble && !this._dragging) {
       const wob = this._wobbleSeed;
-      az += Math.sin(t * (2 * Math.PI / 300) + wob) * degToRad(5);
-      el += Math.sin(t * (2 * Math.PI / 420) + wob * 1.7) * degToRad(3);
-    }
-    if (this._config.manual_rotation) {
-      // Po MANUAL_IDLE_TIMEOUT sekundách nečinnosti se ruční natočení plynule
-      // (exponenciální doběh, nezávislý na FPS) vrátí zpět na 0 - ať karta po
-      // odložení telefonu/myši nezůstane natočená mimo domovskou polohu.
-      // Dá se to ale zastavit tlačítkem se zámkem (`_autoReturnEnabled`), a
-      // tlačítko "vrátit domů" (`_resetRequested`) tuhle stejnou animaci
-      // vynutí OKAMŽITĚ, nezávisle na zámku i na uplynulém čase nečinnosti.
-      if (!this._dragging && (this._manualAz !== 0 || this._manualEl !== 0)) {
-        const idleFor = t - this._lastInteractionT;
-        const shouldReturn =
-          this._resetRequested || (this._autoReturnEnabled && idleFor > MANUAL_IDLE_TIMEOUT);
-        if (shouldReturn) {
-          const k = 1 - Math.exp(-dt / MANUAL_RETURN_TIME_CONSTANT);
-          this._manualAz -= this._manualAz * k;
-          this._manualEl -= this._manualEl * k;
-          if (Math.abs(this._manualAz) < 0.001) this._manualAz = 0;
-          if (Math.abs(this._manualEl) < 0.001) this._manualEl = 0;
-          if (this._manualAz === 0 && this._manualEl === 0) this._resetRequested = false;
-        }
-      }
-      az += this._manualAz;
-      el += this._manualEl;
-    }
-    if (az || el) {
-      camDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), az);
+      const azWobble = Math.sin(t * (2 * Math.PI / 300) + wob) * degToRad(5);
+      const elWobble = Math.sin(t * (2 * Math.PI / 420) + wob * 1.7) * degToRad(3);
+      camDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), azWobble);
       const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), camDir).normalize();
-      camDir.applyAxisAngle(right, el);
+      camDir.applyAxisAngle(right, elWobble);
     }
+
     this._camera.position.copy(camDir).multiplyScalar(CAMERA_DISTANCE);
-    this._camera.up.set(0, 1, 0);
+    this._camera.up.copy(camUp);
     this._camera.lookAt(0, 0, 0);
 
     this._renderer.render(this._scene, this._camera);

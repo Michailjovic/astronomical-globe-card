@@ -4,6 +4,24 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
+## [0.7.0] - 2026-08-13
+
+### Changed
+- Manual rotation rewritten from azimuth/elevation around a fixed vertical
+  axis to a proper quaternion-based trackball/arcball. The previous approach
+  had a hard geometric limit: near a pole the reference axis and the view
+  direction converge (gimbal lock), so an artificial tilt clamp was
+  required, or a long enough vertical drag would suddenly jump the camera
+  to the opposite side of the globe. A quaternion has no fixed reference
+  axis - each drag step rotates around axes derived from the *current*
+  accumulated orientation rather than a fixed world axis, so there is no
+  pole and rotation is genuinely unlimited in every direction, just like
+  spinning a physical globe in your hands. Trade-off: after enough free
+  rotation, north may no longer be "up" on screen (the old system always
+  kept it up). The idle/reset return-to-home animation now uses
+  `Quaternion.slerp()` toward identity instead of decaying two separate
+  numbers.
+
 ## [0.6.0] - 2026-08-13
 
 ### Added
