@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.7.1
+ * @version 0.8.0
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -166,6 +166,16 @@
  * i jako "zablokování" pinch-to-zoom (druhý prst nemá na nic vliv) - žádný
  * skutečný zoom kamery zatím neexistuje, takže tohle je zatím jediná
  * rozumná reakce na dva prsty.
+ *
+ * v0.8.0 - nová volba `celestial_reveal` (výchozí zapnuto): klidová kamera
+ * se mírně (max ~14°) nakloní ke Slunci nebo Měsíci, když je "jejich čas" -
+ * Slunce blízko obzoru (svítání/soumrak), nebo Měsíc nad obzorem v noci.
+ * Předtím byly obě tělesa sice v 3D scéně na fyzikálně správném místě
+ * (viz `_frame`), ale kamera sledující jen domovskou polohu je skoro nikdy
+ * neukázala v záběru - šlo je zahlédnout jen náhodou při ručním otáčení.
+ * Síla náklonu plynule doznívá s výškou nad obzorem (`triangleWeight` pro
+ * Slunce, lineární náběh pro Měsíc), takže se nikdy neobjeví/nezmizí
+ * skokem - viz `_applyCelestialReveal()`.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -173,8 +183,8 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.7.1';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.7.1';
+import * as THREE from './lib/three.module.min.js?v=0.8.0';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.8.0';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -184,9 +194,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.7.1';
+} from './lib/earth-shaders.js?v=0.8.0';
 
-const CARD_VERSION = '0.7.1';
+const CARD_VERSION = '0.8.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -213,6 +223,21 @@ const MANUAL_RETURN_SNAP_ANGLE = 0.001;
 // intensity` ji násobí (1.0 = tato hodnota).
 const ATMOSPHERE_BASE_INTENSITY = 1.55;
 
+// -- Naklonění klidové kamery ke Slunci/Měsíci u obzoru (config
+// `celestial_reveal`) - viz _applyCelestialReveal(). Všechny úhly v
+// radiánech (degToRad() jen pro čitelnost při definici).
+// Slunce: váha má vrchol těsně nad obzorem (ať je vidět jako na referenčním
+// snímku "záře nad okrajem glóbu"), plynule doznívá do 0 na obou stranách.
+const SUN_REVEAL_PEAK = degToRad(3);
+const SUN_REVEAL_HALF_WIDTH = degToRad(18);
+// Měsíc: naklánět jen v noci (Slunce pod obzorem) a jen když je Měsíc už
+// nad obzorem - síla lineárně roste s výškou, plné síly dosáhne v tomto úhlu.
+const MOON_REVEAL_MAX_SUN_ELEVATION = degToRad(-2);
+const MOON_REVEAL_RISE_ANGLE = degToRad(15);
+// Maximální náklon klidové kamery od domovské polohy - záměrně mírný, ať
+// GPS značka domova zůstane většinou v záběru i při plné síle náklonu.
+const CELESTIAL_MAX_NUDGE = degToRad(14);
+
 const QUALITY_TIERS = {
   low: { label: 'Nízká (rychlá)', earth: 1024, folder: 'low' },
   medium: { label: 'Střední (doporučeno)', earth: 2048, folder: 'medium' },
@@ -233,6 +258,7 @@ const DEFAULT_CONFIG = {
   show_day_length: true,
   rotation_wobble: true,
   manual_rotation: true,
+  celestial_reveal: true,
   accent_color: '',
   // -- vzhled/barevnost - všechno níž má svůj posuvník ve vizuálním editoru
   brightness: 1.35, // jas/exposure - hlavně světla měst v noci
@@ -266,6 +292,16 @@ function geoToVector3(lat, lon, radius = 1) {
   const y = radius * Math.sin(latR);
   const z = -radius * Math.cos(latR) * Math.sin(lonR);
   return new THREE.Vector3(x, y, z);
+}
+
+/** Trojúhelníková váha 0..1 s vrcholem 1 v `peak`, lineárně klesající na 0
+ * ve vzdálenosti `halfWidth` na obě strany. Používá se pro plynulé
+ * "doznívání" náklonu kamery ke Slunci/Měsíci u obzoru (viz
+ * `_applyCelestialReveal`), ať se síla efektu nemění skokem. */
+function triangleWeight(value, peak, halfWidth) {
+  const d = Math.abs(value - peak);
+  if (d >= halfWidth) return 0;
+  return 1 - d / halfWidth;
 }
 
 function formatDuration(hoursFloat) {
@@ -1215,6 +1251,69 @@ class AstronomicalGlobeCard extends HTMLElement {
     }
   }
 
+  /**
+   * Mírně "nahne" klidový směr kamery (`camDir`, jednotkový vektor) ke
+   * Slunci nebo Měsíci, pokud je zrovna "jejich čas" - Slunce blízko obzoru
+   * (svítání/soumrak, jako na referenčním snímku se září nad okrajem
+   * glóbu), nebo Měsíc nad obzorem v noci. Bez ručního otáčení by je totiž
+   * kamera sledující jen domovskou polohu skoro nikdy neukázala (jsou sice
+   * v 3D scéně na fyzikálně správném místě, ale mimo záběr).
+   *
+   * Váha (0..1) plynule doznívá s výškou nad obzorem (viz `triangleWeight`
+   * / lineární náběh u Měsíce), takže se náklon nikdy neobjeví/nezmizí
+   * skokem - jen sleduje reálný pohyb Slunce/Měsíce po obloze (řádově
+   * minuty), žádné vlastní stavové doběhy tu nejsou potřeba. Náklon je
+   * navíc omezený na `CELESTIAL_MAX_NUDGE` (~14°), ať domovská značka
+   * zůstane většinou v záběru i při plné síle efektu.
+   */
+  _applyCelestialReveal(camDir, homeDir, sunDirWorld, moonDir) {
+    // Výška tělesa nad obzorem z pohledu domovské polohy = 90° minus úhlová
+    // vzdálenost mezi domovem a bodem, kde je dané těleso právě v zenitu -
+    // homeDir/sunDirWorld/moonDir jsou všechno jednotkové vektory ze
+    // stejného geoToVector3(), takže stačí skalární součin (stejná
+    // matematika jako getSunTimes(), jen vyjádřená vektorově).
+    const elevationOf = (dir) =>
+      Math.PI / 2 - Math.acos(Math.max(-1, Math.min(1, homeDir.dot(dir))));
+
+    let targetDir = null;
+    let weight = 0;
+
+    if (this._config.show_sun_marker) {
+      const sunElevation = elevationOf(sunDirWorld);
+      const sunWeight = triangleWeight(sunElevation, SUN_REVEAL_PEAK, SUN_REVEAL_HALF_WIDTH);
+      if (sunWeight > weight) {
+        weight = sunWeight;
+        targetDir = sunDirWorld;
+      }
+    }
+    if (this._config.show_moon && moonDir) {
+      const sunElevation = elevationOf(sunDirWorld);
+      const moonElevation = elevationOf(moonDir);
+      if (sunElevation <= MOON_REVEAL_MAX_SUN_ELEVATION && moonElevation > 0) {
+        const moonWeight = Math.min(1, moonElevation / MOON_REVEAL_RISE_ANGLE);
+        if (moonWeight > weight) {
+          weight = moonWeight;
+          targetDir = moonDir;
+        }
+      }
+    }
+
+    if (!targetDir || weight <= 0) return camDir;
+
+    const camNorm = camDir.clone().normalize();
+    const targetNorm = targetDir.clone().normalize();
+    const dot = Math.max(-1, Math.min(1, camNorm.dot(targetNorm)));
+    const angleBetween = Math.acos(dot);
+    if (angleBetween < 1e-4) return camDir; // uz skoro presne smeruje tam
+
+    const axis = new THREE.Vector3().crossVectors(camNorm, targetNorm);
+    if (axis.length() < 1e-6) return camDir; // presne protilehly smer - osa neni definovana (extremni edge case)
+    axis.normalize();
+
+    const nudgeAngle = Math.min(angleBetween, CELESTIAL_MAX_NUDGE * weight);
+    return camDir.clone().applyAxisAngle(axis, nudgeAngle);
+  }
+
   _frame() {
     if (!this._renderer || !this._location) return;
     const now = new Date();
@@ -1233,9 +1332,10 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._sunSprite.visible = !!this._config.show_sun_marker;
     this._sunHalo.visible = !!this._config.show_sun_marker;
 
+    let moonDir = null;
     if (this._config.show_moon) {
       const moon = getMoonPosition(now);
-      const moonDir = geoToVector3(moon.lat, moon.lon, 1);
+      moonDir = geoToVector3(moon.lat, moon.lon, 1);
       this._moonMesh.position.copy(moonDir).multiplyScalar(MOON_ORBIT_RADIUS);
       this._moonMesh.visible = true;
     } else {
@@ -1300,6 +1400,13 @@ class AstronomicalGlobeCard extends HTMLElement {
       camDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), azWobble);
       const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), camDir).normalize();
       camDir.applyAxisAngle(right, elWobble);
+    }
+
+    // Mírné naklonění klidové kamery ke Slunci/Měsíci, když je "jejich čas"
+    // (Slunce u obzoru, nebo Měsíc nad obzorem v noci) - stejná podmínka
+    // "ne během tažení" jako u wobble, viz _applyCelestialReveal().
+    if (this._config.celestial_reveal && !this._dragging) {
+      camDir = this._applyCelestialReveal(camDir, homeDir, sunDirWorld, moonDir);
     }
 
     this._camera.position.copy(camDir).multiplyScalar(CAMERA_DISTANCE);
@@ -1488,6 +1595,7 @@ const EDITOR_SCHEMA = [
   { name: 'show_day_length', selector: { boolean: {} } },
   { name: 'rotation_wobble', selector: { boolean: {} } },
   { name: 'manual_rotation', selector: { boolean: {} } },
+  { name: 'celestial_reveal', selector: { boolean: {} } },
   {
     name: 'brightness',
     selector: { number: { min: 0.5, max: 5, step: 0.1, mode: 'slider' } },
@@ -1540,6 +1648,7 @@ const EDITOR_LABELS = {
   show_day_length: 'Zobrazit délku dne',
   rotation_wobble: 'Jemná animovaná rotace',
   manual_rotation: 'Ruční otáčení tažením (myš/prst)',
+  celestial_reveal: 'Naklonit pohled ke Slunci/Měsíci u obzoru',
   brightness: 'Jas (světla měst v noci)',
   night_ambient: 'Podsvícení nočního oceánu',
   saturation: 'Sytost barev',

@@ -4,6 +4,19 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
+## [0.8.0] - 2026-08-13
+
+### Added
+- New `celestial_reveal` option (on by default): the resting camera now
+  leans gently (up to ~14°) toward the Sun or Moon when it's "their time" -
+  Sun near the horizon (sunrise/sunset), or Moon above the horizon at
+  night. Both bodies were already positioned correctly in the 3D scene, but
+  a camera that only ever tracks the home location almost never happened to
+  show them in frame - you'd only catch a glimpse by manually rotating.
+  The lean strength fades in/out smoothly with elevation (a triangular
+  weight centered just above the horizon for the Sun, a linear ramp for the
+  Moon), so it never appears or disappears abruptly.
+
 ## [0.7.1] - 2026-08-13
 
 ### Fixed
