@@ -4,6 +4,22 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
+## [0.7.1] - 2026-08-13
+
+### Fixed
+- Erratic/chaotic rotation when a second finger touched the card (e.g.
+  attempting a pinch gesture). The Pointer Events API sends a separate
+  pointerdown for each finger (distinct pointerId); the code didn't
+  distinguish between them, so a second touch would silently take over the
+  in-progress drag's tracked coordinates, and subsequent moves from either
+  finger got interpreted as deltas from whichever finger last reported -
+  hence the nonsensical jumps (not an actual zoom attempt gone wrong). Now
+  a drag is "owned" by whichever pointerId started it; any other pointer is
+  ignored entirely until the first one is released. Side effect: this also
+  fully neutralizes pinch-to-zoom on the globe (the second finger has no
+  effect at all) - there's no real camera zoom yet, so that's the only
+  sensible response to a second touch point for now.
+
 ## [0.7.0] - 2026-08-13
 
 ### Changed

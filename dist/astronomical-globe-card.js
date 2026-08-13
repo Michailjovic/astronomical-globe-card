@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.7.0
+ * @version 0.7.1
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -154,6 +154,18 @@
  * rozdíl od staré verze, která "nahoře" vždy držela). Auto-návrat (tlačítko
  * i idle timeout) teď dělá `Quaternion.slerp()` k identitě místo dřívějšího
  * exponenciálního doběhu dvou čísel.
+ *
+ * v0.7.1 - oprava "zbláznění" při dotyku druhým prstem (např. při pokusu
+ * o pinch-to-zoom): Pointer Events API posílá samostatný pointerdown pro
+ * KAŽDÝ prst zvlášť (různé pointerId) a kód dřív žádný z nich nerozlišoval -
+ * druhý prst přepsal souřadnice rozjetého tažení a oba prsty pak střídavě
+ * posílaly pohyby počítané jako delta od "kohokoli naposled", odtud ty
+ * nesmyslné skoky (ne pokus o samotný zoom). Teď tažení drží jen ten
+ * pointerId, který ho zahájil - každý další prst se, dokud se ten první
+ * nepustí, úplně ignoruje. Vedlejší efekt: tím pádem samo o sobě funguje
+ * i jako "zablokování" pinch-to-zoom (druhý prst nemá na nic vliv) - žádný
+ * skutečný zoom kamery zatím neexistuje, takže tohle je zatím jediná
+ * rozumná reakce na dva prsty.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -161,8 +173,8 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.7.0';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.7.0';
+import * as THREE from './lib/three.module.min.js?v=0.7.1';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.7.1';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -172,9 +184,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.7.0';
+} from './lib/earth-shaders.js?v=0.7.1';
 
-const CARD_VERSION = '0.7.0';
+const CARD_VERSION = '0.7.1';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -580,6 +592,9 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._dragLastX = 0;
     this._dragLastY = 0;
     this._lastInteractionT = 0;
+    // ID pointeru, který právě "drží" rotaci - viz onPointerDown/onPointerMove
+    // níž, řeší chaos při dvouprstém dotyku (pinch).
+    this._activePointerId = null;
 
     // rad/px - horizontální tažení citlivější než vertikální (odpovídá tomu,
     // že otáčení kolem svislé osy působí přirozeněji než naklápění pólů).
@@ -589,7 +604,21 @@ class AstronomicalGlobeCard extends HTMLElement {
     const onPointerDown = (ev) => {
       if (!this._config.manual_rotation) return;
       if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+      // SKUTEČNÁ PŘÍČINA "zbláznění" při dotyku druhým prstem (pinch): Pointer
+      // Events API posílá SAMOSTATNÝ pointerdown pro KAŽDÝ prst (různé
+      // pointerId), a kód dřív žádný z nich nerozlišoval - druhý prst prostě
+      // přepsal _dragLastX/Y na svoje souřadnice a "ukradl" rozjeté tažení.
+      // Pak oba prsty střídavě posílaly pointermove, každý počítaný jako
+      // delta od POSLEDNÍHO (libovolného) prstu - odtud ty nesmyslné skoky,
+      // ne skutečný pokus o zoom samotný. Řešení: jakmile jednou tažení drží
+      // konkrétní pointerId, každý DALŠÍ pointerdown (druhý/třetí prst) se
+      // úplně ignoruje, dokud se ten první nepustí - druhý prst tak nemá na
+      // rotaci žádný vliv (ani chaos, ani vlastní zoom - proto to zároveň
+      // funguje jako "zablokování" pinch-to-zoom, který `touch-action: none`
+      // na canvasu stejně už brání dělat prohlížeči/OS na úrovni stránky).
+      if (this._dragging) return;
       this._dragging = true;
+      this._activePointerId = ev.pointerId;
       // Chycení glóbu rukou vždy zruší čekající požadavek na reset (tlačítko
       // "vrátit domů") - jinak by po puštění mohl přijít neočekávaný skok
       // zpět i uprostřed nového tažení.
@@ -600,7 +629,7 @@ class AstronomicalGlobeCard extends HTMLElement {
       try { el.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
     };
     const onPointerMove = (ev) => {
-      if (!this._dragging) return;
+      if (!this._dragging || ev.pointerId !== this._activePointerId) return;
       const dx = ev.clientX - this._dragLastX;
       const dy = ev.clientY - this._dragLastY;
       this._dragLastX = ev.clientX;
@@ -654,8 +683,11 @@ class AstronomicalGlobeCard extends HTMLElement {
       this._lastInteractionT = this._clock.getElapsedTime();
     };
     const endDrag = (ev) => {
-      if (!this._dragging) return;
+      // Pozvednutí/zrušení DRUHÉHO (ignorovaného) prstu nesmí ukončit
+      // tažení prvního - ten pořád může tisknout dál.
+      if (!this._dragging || ev.pointerId !== this._activePointerId) return;
       this._dragging = false;
+      this._activePointerId = null;
       this._lastInteractionT = this._clock.getElapsedTime();
       el.classList.remove('agc-dragging');
       try { el.releasePointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
