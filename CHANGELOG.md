@@ -4,6 +4,48 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
+## [0.19.0] - 2026-08-13
+
+### Added
+- Solar System view: planets now get a more realistic surface once you
+  click/zoom in, instead of a flat-colored sphere. Rocky bodies (Mercury,
+  Venus, Mars, Pluto, the mini-Moon) get a mottled, cratered look; gas
+  giants (Jupiter, Saturn, Uranus, Neptune) get horizontal banding - all
+  generated procedurally on a canvas at runtime, no new downloaded assets.
+  Earth and the mini-Moon are additionally upgraded to the real NASA
+  textures already used for the globe view once they finish loading (the
+  Moon reuses the same downloaded file; Earth's texture is fetched from
+  the same cached URL as the globe's day texture).
+
+## [0.18.0] - 2026-08-13
+
+### Changed
+- All user-facing UI text (buttons, titles, ARIA labels, config editor
+  fields, error messages, Solar System info panel, sunrise/sunset
+  countdown) is now in English. Code comments are unaffected.
+
+## [0.17.0] - 2026-08-13
+
+### Added
+- Solar System view: the date shown in the time-animation bar can now be
+  set directly via a native date picker, instead of only being reachable
+  by playing/fast-forwarding through time. Picking a date jumps straight
+  to it (keeping the current time-of-day) and immediately recalculates
+  planet positions, whether the animation is playing or paused. The "Today"
+  button still returns to live tracking.
+
+## [0.16.0] - 2026-08-13
+
+### Fixed
+- Solar System view: the camera kept slowly orbiting the scene even while
+  the time-animation was paused, which read to users as "the planets are
+  still rotating". Root cause: the decorative ambient camera orbit was
+  driven by the card's absolute wall-clock elapsed time regardless of the
+  play/pause state of the time controls. It's now driven by an accumulator
+  that only advances while the time animation is actually playing, so
+  pressing pause now stops all visible motion in the scene (manual drag
+  still works as before, independent of play/pause).
+
 ## [0.15.0] - 2026-08-13
 
 ### Added

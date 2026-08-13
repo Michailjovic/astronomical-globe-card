@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.15.0
+ * @version 0.19.0
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -299,6 +299,59 @@
  * tabulce (shoda na 3-4 platné číslice) + Keplerovým 2. a 3. zákonem
  * (viz `lib/planets.js` a testy) - stejná úroveň důvěry jako u ostatních
  * 8 planet.
+ *
+ * v0.16.0 - oprava: v solar view se scéna vizuálně dál "hýbala" i po
+ * stisku pauzy na časové liště. Příčina: dekorativní auto-orbit kamery
+ * (`_frameSolar` proměnná `az`) se od v0.9.0 počítal z absolutního
+ * `t = this._clock.getElapsedTime()` (čas od inicializace karty), takže
+ * běžel napořád bez ohledu na `_solarTimeSpeed`/pauzu - `_solarSimTime`
+ * (simulované datum) se skutečně zastavilo, ale kamera dál obtáčela
+ * scénu, což z uživatelské perspektivy vypadalo jako "planety pořád
+ * rotují". Fix: nový akumulátor `_solarAutoAz` se přičítá (`dt *
+ * SOLAR_CAMERA_ORBIT_SPEED`) jen uvnitř bloku `if (this._solarTimeSpeed
+ * !== 0)`, tedy jen dokud animace skutečně běží. Ruční tažení
+ * (`_solarAzOffset`) zůstává nezávislé a funguje i na pauze beze změny.
+ *
+ * v0.17.0 - datum v časové liště solar view jde teď NASTAVIT přímo, ne jen
+ * posouvat přehráváním/rychlostí: `.agc-solar-time-label` je od téhle
+ * verze nativní `<input type="date">` (dřív jen zobrazovací `<div>`),
+ * viz `onDateChange` v `_bindSolarTimeControls()`. Výběr dne nastaví
+ * `_solarSimTime` na nové datum se zachovaným časem dne (hodina/minuta ze
+ * stávajícího `_solarSimTime`, nebo z reálného "teď", pokud animace ještě
+ * neběžela) a rovnou přepočítá pozice (`_updateSolarPositions`) - nutné
+ * hlavně na pauze, kdy `_frameSolar()` pozice sám nepřepočítává (viz oprava
+ * v0.16.0 výš). `_updateSolarTimeUi()` teď naopak zapisuje ISO datum
+ * (`YYYY-MM-DD`, lokální komponenty, ne UTC) do `.value` inputu místo
+ * textu, a volá se i z živého (needivergentního) sledování přes
+ * `_updateUiText()`, aby input po půlnoci sám ukázal nový den.
+ *
+ * v0.18.0 - všechny UI popisky (tlačítka, tituly, aria-label, editor
+ * konfigurace, chybové hlášky, info panel solar view, odpočet
+ * východu/západu) přeloženy do angličtiny - na žádost uživatele. Komentáře
+ * v kódu (jako tenhle) zůstávají česky, to se netýkalo. Přejmenováno i pár
+ * interních konstant, aby název odpovídal obsahu: `PLANET_LABELS_CS` →
+ * `PLANET_LABELS_EN`, `COMPASS_LABELS_CS` → `COMPASS_LABELS_EN`. Fallback
+ * jazyka pro formátování data/času v `getLocale()` (použije se, jen když
+ * HA nedodá `hass.locale` ANI prohlížeč `navigator.language`, v praxi
+ * skoro nikdy) změněn z `'cs'` na `'en'`, ať i tenhle krajní případ sedí
+ * s výchozí angličtinou karty.
+ *
+ * v0.19.0 - planety v solar view mají po přiblížení (klik → zoom, viz
+ * SOLAR_FOCUS_DIST_FACTOR) o něco realističtější povrch místo ploché
+ * barvy - `makePlanetMaterial()`/`makeRockyPlanetTexture()`/
+ * `makeBandedPlanetTexture()` výš generují texturu čistě proceduálně na
+ * runtime `<canvas>` (per-pixel přes ImageData, stejný princip jako
+ * `_paintMoonPhase()`), žádné nové binární assety/stahování z internetu.
+ * Kamenná tělesa (Merkur, Venuše, Mars, Pluto, Měsíc) dostanou mottled
+ * povrch s pár desítkami kráterových skvrn, plynné obry (Jupiter, Saturn,
+ * Uran, Neptun) vodorovné pruhy s plynulým přechodem + jemnou turbulencí -
+ * deterministický seed podle klíče tělesa, takže vzhled je stabilní napříč
+ * refreshi. Země a Měsíc navíc, jakmile doletí síť, dostanou přepsáno
+ * skutečnou NASA texturou (`_loadTextures()`) - u Měsíce jde o STEJNÝ
+ * soubor `moon.jpg`, který se už tak jako tak stahoval pro glóbus, jen se
+ * teď přiřadí i mini-Měsíci v solar view (žádný požadavek navíc); u Země
+ * jde o druhý `TextureLoader.load()` na stejnou URL jako `earth-day.jpg`
+ * pro glóbus, takže ho prohlížeč servíruje z vlastní HTTP cache.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -306,8 +359,8 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.15.0';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.15.0';
+import * as THREE from './lib/three.module.min.js?v=0.19.0';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.19.0';
 import {
   getPlanetPositions,
   PLANET_ORDER,
@@ -316,7 +369,7 @@ import {
   NAKED_EYE_PLANETS,
   getPlutoPosition,
   PLUTO_MEAN_DISTANCE_AU,
-} from './lib/planets.js?v=0.15.0';
+} from './lib/planets.js?v=0.19.0';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -326,9 +379,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.15.0';
+} from './lib/earth-shaders.js?v=0.19.0';
 
-const CARD_VERSION = '0.15.0';
+const CARD_VERSION = '0.19.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -371,9 +424,9 @@ const MOON_REVEAL_RISE_ANGLE = degToRad(15);
 const CELESTIAL_MAX_NUDGE = degToRad(14);
 
 const QUALITY_TIERS = {
-  low: { label: 'Nízká (rychlá)', earth: 1024, folder: 'low' },
-  medium: { label: 'Střední (doporučeno)', earth: 2048, folder: 'medium' },
-  high: { label: 'Vysoká', earth: 4096, folder: 'high' },
+  low: { label: 'Low (fast)', earth: 1024, folder: 'low' },
+  medium: { label: 'Medium (recommended)', earth: 2048, folder: 'medium' },
+  high: { label: 'High', earth: 4096, folder: 'high' },
 };
 
 // -- Pohled "sluneční soustava" (tlačítko v rohu, config-independent) -----
@@ -406,9 +459,9 @@ const PLANET_VISUALS = {
   uranus: { color: 0x9fe3e3, radius: 0.10 },
   neptune: { color: 0x4066e0, radius: 0.095 },
 };
-const PLANET_LABELS_CS = {
-  mercury: 'Merkur', venus: 'Venuše', earth: 'Země', mars: 'Mars',
-  jupiter: 'Jupiter', saturn: 'Saturn', uranus: 'Uran', neptune: 'Neptun',
+const PLANET_LABELS_EN = {
+  mercury: 'Mercury', venus: 'Venus', earth: 'Earth', mars: 'Mars',
+  jupiter: 'Jupiter', saturn: 'Saturn', uranus: 'Uranus', neptune: 'Neptune',
   pluto: 'Pluto',
 };
 // Pluto (v0.15.0) - stylizovaná barva/velikost jako u PLANET_VISUALS výš,
@@ -473,7 +526,7 @@ const SOLAR_ORIGIN = new THREE.Vector3(0, 0, 0);
 // sekundu), vždy dopředu v čase. Dost širokí rozsah, aby šlo sledovat jak
 // rychlý oběh Merkuru (88 dní), tak pomalý Neptun (165 let) v rozumném čase.
 const SOLAR_TIME_SPEED_PRESETS_DAYS_PER_SEC = [1, 7, 30, 365];
-const SOLAR_TIME_SPEED_LABELS = { 1: '1 den/s', 7: '1 týd/s', 30: '1 měs/s', 365: '1 rok/s' };
+const SOLAR_TIME_SPEED_LABELS = { 1: '1 day/s', 7: '1 wk/s', 30: '1 mo/s', 365: '1 yr/s' };
 const MS_PER_DAY = 86400000;
 
 const DEFAULT_CONFIG = {
@@ -542,7 +595,7 @@ const KM_PER_AU = 149597870.7;
 
 function formatAU(distanceAU) {
   const km = distanceAU * KM_PER_AU;
-  const kmText = km >= 1e6 ? `${(km / 1e6).toFixed(1)} mil. km` : `${Math.round(km)} km`;
+  const kmText = km >= 1e6 ? `${(km / 1e6).toFixed(1)} million km` : `${Math.round(km)} km`;
   const auText = distanceAU.toFixed(distanceAU < 10 ? 2 : 1);
   return `${auText} AU (${kmText})`;
 }
@@ -590,35 +643,35 @@ function describeSolarAlignment(key, elong, earthDistanceAU) {
   if (elong.elongationDeg < SOLAR_CONJUNCTION_THRESHOLD_DEG) {
     if (isInferior) {
       return elong.distToEarthAU < earthDistanceAU
-        ? 'dolní konjunkce (mezi Zemí a Sluncem)'
-        : 'horní konjunkce (za Sluncem)';
+        ? 'inferior conjunction (between Earth and the Sun)'
+        : 'superior conjunction (behind the Sun)';
     }
-    return 'konjunkce se Sluncem - teď špatně pozorovatelný';
+    return 'conjunction with the Sun - poorly visible right now';
   }
   if (!isInferior && 180 - elong.elongationDeg < SOLAR_OPPOSITION_THRESHOLD_DEG) {
-    return 'opozice - ideální čas k pozorování, na obloze celou noc';
+    return 'opposition - ideal time to observe, visible all night';
   }
-  const side = elong.diffLon > 0 ? 'večer po západu Slunce' : 'ráno před východem Slunce';
-  return `${Math.round(elong.elongationDeg)}° od Slunce - viditelný ${side}`;
+  const side = elong.diffLon > 0 ? 'the evening after sunset' : 'the morning before sunrise';
+  return `${Math.round(elong.elongationDeg)}° from the Sun - visible in ${side}`;
 }
 
 // -- "Co je dnes vidět ze Země" v info panelu solar view (v0.13.0) --------
-const COMPASS_LABELS_CS = ['S', 'SV', 'V', 'JV', 'J', 'JZ', 'Z', 'SZ'];
+const COMPASS_LABELS_EN = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 
-/** Azimut (0-360°, 0=sever) -> nejbližší z 8 světových stran česky. */
+/** Azimut (0-360°, 0=sever) -> nejbližší z 8 světových stran anglicky. */
 function compassLabel(azimuthDeg) {
   const idx = Math.round(azimuthDeg / 45) % 8;
-  return COMPASS_LABELS_CS[idx];
+  return COMPASS_LABELS_EN[idx];
 }
 
 /** Popisný text k tomu, jestli/kde je planeta právě vidět z domovské
  * polohy - `isNight` je `null`, když domovská poloha není nastavená
  * (viz `_isNightAtHome`). */
 function describeVisibility(altitudeDeg, azimuthDeg, isNight) {
-  if (altitudeDeg <= 0) return 'pod obzorem';
-  const altText = `${Math.round(altitudeDeg)}° nad obzorem (${compassLabel(azimuthDeg)})`;
+  if (altitudeDeg <= 0) return 'below the horizon';
+  const altText = `${Math.round(altitudeDeg)}° above horizon (${compassLabel(azimuthDeg)})`;
   if (isNight === null) return altText;
-  return isNight ? `${altText} - viditelný teď` : `${altText}, ale zatím denní světlo`;
+  return isNight ? `${altText} - visible now` : `${altText}, but still daylight`;
 }
 
 function formatDuration(hoursFloat) {
@@ -630,7 +683,7 @@ function formatDuration(hoursFloat) {
 }
 
 function getLocale(hass) {
-  return (hass && hass.locale && hass.locale.language) || navigator.language || 'cs';
+  return (hass && hass.locale && hass.locale.language) || navigator.language || 'en';
 }
 
 function uses24h(hass) {
@@ -707,6 +760,146 @@ function makeMarkerTexture(color) {
   return tex;
 }
 
+// -- Procedurální povrch planet při přiblížení (v0.19.0) -------------------
+// V přehledu celé soustavy je planeta jen pár pixelů - plochá barva stačí.
+// Po kliknutí ale kamera "doletí" hodně blízko (viz _handleSolarClick/
+// SOLAR_FOCUS_DIST_FACTOR) a holá barevná koule tam zblízka vypadá lacině.
+// Žádné nové binární assety (žádné stahování z internetu, žádný build
+// krok) - povrch se generuje čistě proceduálně na runtime <canvas>, přímo
+// přes ImageData (per-pixel), stejný princip jako _paintMoonPhase() níž,
+// jen bez skutečného osvětlení (to zajišťuje MeshStandardMaterial +
+// PointLight scény samo). Deterministický seed (hash klíče tělesa) - stejná
+// planeta vypadá stejně při každém načtení karty, ne náhodně jinak při
+// každém refreshi.
+
+/** Malý deterministický PRNG (mulberry32) - Math.random() nejde seedovat. */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function hashSeed(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = (Math.imul(h, 31) + str.charCodeAt(i)) | 0;
+  return h >>> 0;
+}
+
+function hexToRgb(hex) {
+  return [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255];
+}
+
+/** Mottled/kráterovaný povrch pro kamenná tělesa (Merkur, Venuše, Mars,
+ * Pluto, Měsíc, dočasně i Země než doletí skutečná NASA textura) -
+ * základní barva + jemný pixelový šum + pár desítek tmavších kráterových
+ * skvrn s měkkým poklesem k okraji. */
+function makeRockyPlanetTexture(colorHex, seed) {
+  const w = 128, h = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(w, h);
+  const [br, bg, bb] = hexToRgb(colorHex);
+  const rand = mulberry32(seed);
+
+  const craterCount = 26;
+  const craters = [];
+  for (let i = 0; i < craterCount; i++) {
+    craters.push({ x: rand() * w, y: rand() * h, r: 2 + rand() * 7, depth: 0.15 + rand() * 0.35 });
+  }
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      // Vysokofrekvenční šum spočtený ze souřadnic (ne z rand() volaného v
+      // pořadí kráterů výš), ať mottled vzhled nezávisí na počtu kráterů.
+      const n = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+      const noise = (Math.abs(n % 1) - 0.5) * 0.12;
+
+      let shade = 1 + noise;
+      for (const c of craters) {
+        const dx = x - c.x, dy = y - c.y;
+        const d = Math.sqrt(dx * dx + dy * dy) / c.r;
+        if (d < 1) shade -= c.depth * (1 - d);
+      }
+      shade = Math.max(0.35, Math.min(1.15, shade));
+
+      const idx = (y * w + x) * 4;
+      img.data[idx] = Math.min(255, br * shade);
+      img.data[idx + 1] = Math.min(255, bg * shade);
+      img.data[idx + 2] = Math.min(255, bb * shade);
+      img.data[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace; // viz poznámka u makeGlowSpriteTexture
+  return tex;
+}
+
+/** Vodorovně pásovaný povrch pro plynné obry (Jupiter, Saturn, Uran,
+ * Neptun) - pruhy různého jasu kolem základní barvy s plynulým přechodem
+ * mezi sousedními pruhy + jemná horizontální turbulence, ať to nejsou jen
+ * ostré rovné čáry. */
+function makeBandedPlanetTexture(colorHex, seed) {
+  const w = 128, h = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(w, h);
+  const [br, bg, bb] = hexToRgb(colorHex);
+  const rand = mulberry32(seed);
+
+  const bandCount = 7 + Math.floor(rand() * 4);
+  const bandShades = [];
+  for (let i = 0; i < bandCount; i++) bandShades.push(0.78 + rand() * 0.4);
+
+  for (let y = 0; y < h; y++) {
+    const bandF = (y / h) * bandCount;
+    const bandIdx = Math.min(bandCount - 1, Math.floor(bandF));
+    const bandFrac = bandF - bandIdx;
+    const nextShade = bandShades[Math.min(bandCount - 1, bandIdx + 1)];
+    const shadeBase = bandShades[bandIdx] + (nextShade - bandShades[bandIdx]) * bandFrac;
+
+    for (let x = 0; x < w; x++) {
+      // Síla vlnění se liší pruh od pruhu (bandIdx ve fázi sinu), ať
+      // nejsou všechny pruhy vlnité úplně stejně.
+      const wobble = Math.sin(x * 0.25 + bandIdx * 1.7) * 0.04;
+      const shade = Math.max(0.5, Math.min(1.25, shadeBase + wobble));
+
+      const idx = (y * w + x) * 4;
+      img.data[idx] = Math.min(255, br * shade);
+      img.data[idx + 1] = Math.min(255, bg * shade);
+      img.data[idx + 2] = Math.min(255, bb * shade);
+      img.data[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace; // viz poznámka u makeGlowSpriteTexture
+  return tex;
+}
+
+const GAS_GIANT_KEYS = new Set(['jupiter', 'saturn', 'uranus', 'neptune']);
+
+/** Vytvoří MeshStandardMaterial tělesa v solar view s procedurálním
+ * povrchem (rocky/band podle druhu, viz výš). `color: 0xffffff` je
+ * záměrné - textura sama už nese finální odstín (základní barva × shade
+ * v generátoru), takže barvu materiálu nechceme násobit navíc (jinak by
+ * výsledek vyšel tmavší/posunutý oproti zamýšlené barvě tělesa). */
+function makePlanetMaterial(key, colorHex) {
+  const seed = hashSeed(key);
+  const map = GAS_GIANT_KEYS.has(key)
+    ? makeBandedPlanetTexture(colorHex, seed)
+    : makeRockyPlanetTexture(colorHex, seed);
+  return new THREE.MeshStandardMaterial({ color: 0xffffff, map, roughness: 0.9, metalness: 0 });
+}
+
 // ---------------------------------------------------------------------------
 // Hlavní karta
 // ---------------------------------------------------------------------------
@@ -722,10 +915,10 @@ class AstronomicalGlobeCard extends HTMLElement {
 
   setConfig(config) {
     if (!config) {
-      throw new Error('Neplatná konfigurace karty.');
+      throw new Error('Invalid card configuration.');
     }
     if (config.location_source === 'entity' && !config.entity) {
-      throw new Error('Při location_source: entity je nutné nastavit entity.');
+      throw new Error("When location_source is 'entity', the entity option is required.");
     }
     const prevQuality = this._config ? this._config.quality : null;
     this._config = { ...DEFAULT_CONFIG, ...config };
@@ -839,7 +1032,7 @@ class AstronomicalGlobeCard extends HTMLElement {
               <div class="agc-time"></div>
             </div>
             <div class="agc-view-controls">
-              <button type="button" class="agc-btn agc-btn-solar" title="Zobrazit sluneční soustavu" aria-label="Zobrazit sluneční soustavu" aria-pressed="false">
+              <button type="button" class="agc-btn agc-btn-solar" title="Show Solar System view" aria-label="Show Solar System view" aria-pressed="false">
                 <svg class="agc-icon-solar-on" viewBox="0 0 24 24" width="16" height="16">
                   <circle cx="12" cy="12" r="2.6" fill="currentColor"/>
                   <ellipse cx="12" cy="12" rx="9" ry="4.4" fill="none" stroke="currentColor" stroke-width="1.4"/>
@@ -849,7 +1042,7 @@ class AstronomicalGlobeCard extends HTMLElement {
                   <path d="M15 4 L7 12 L15 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
               </button>
-              <button type="button" class="agc-btn agc-btn-reset" title="Vrátit pohled na domovskou polohu" aria-label="Vrátit pohled na domovskou polohu">
+              <button type="button" class="agc-btn agc-btn-reset" title="Return view to home location" aria-label="Return view to home location">
                 <svg viewBox="0 0 24 24" width="16" height="16">
                   <circle cx="12" cy="12" r="5" fill="none" stroke="currentColor" stroke-width="2"/>
                   <line x1="12" y1="1" x2="12" y2="5" stroke="currentColor" stroke-width="2"/>
@@ -858,7 +1051,7 @@ class AstronomicalGlobeCard extends HTMLElement {
                   <line x1="19" y1="12" x2="23" y2="12" stroke="currentColor" stroke-width="2"/>
                 </svg>
               </button>
-              <button type="button" class="agc-btn agc-btn-lock" title="Zastavit automatický návrat pohledu" aria-label="Zastavit automatický návrat pohledu" aria-pressed="false">
+              <button type="button" class="agc-btn agc-btn-lock" title="Stop automatic view return" aria-label="Stop automatic view return" aria-pressed="false">
                 <svg class="agc-icon-unlocked" viewBox="0 0 24 24" width="16" height="16">
                   <rect x="5" y="11" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>
                   <path d="M8 11V7a4 4 0 0 1 7.2-2.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -869,10 +1062,10 @@ class AstronomicalGlobeCard extends HTMLElement {
                 </svg>
               </button>
             </div>
-            <div class="agc-corner agc-corner-bl" title="Fáze Měsíce">
+            <div class="agc-corner agc-corner-bl" title="Moon phase">
               <canvas class="agc-moon-icon" width="44" height="44"></canvas>
             </div>
-            <div class="agc-corner agc-corner-br" title="Poloha na oběžné dráze">
+            <div class="agc-corner agc-corner-br" title="Position in orbit">
               <svg class="agc-orbit-icon" viewBox="0 0 44 44">
                 <circle cx="22" cy="22" r="18" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="1"/>
                 <circle class="agc-orbit-sun" cx="22" cy="22" r="3.4" fill="#ffcf6b"/>
@@ -884,7 +1077,7 @@ class AstronomicalGlobeCard extends HTMLElement {
               <div class="agc-row agc-daylength"></div>
             </div>
             <div class="agc-solar-info" hidden>
-              <button type="button" class="agc-solar-info-close" aria-label="Zavřít detail planety">✕</button>
+              <button type="button" class="agc-solar-info-close" aria-label="Close planet details">✕</button>
               <div class="agc-solar-info-name"></div>
               <div class="agc-solar-info-row agc-solar-info-sun"></div>
               <div class="agc-solar-info-row agc-solar-info-earth"></div>
@@ -892,7 +1085,7 @@ class AstronomicalGlobeCard extends HTMLElement {
               <div class="agc-solar-info-row agc-solar-info-visibility"></div>
             </div>
             <div class="agc-solar-time" style="display:none">
-              <button type="button" class="agc-btn agc-solar-time-play" title="Přehrát časovou animaci" aria-label="Přehrát časovou animaci" aria-pressed="false">
+              <button type="button" class="agc-btn agc-solar-time-play" title="Play time animation" aria-label="Play time animation" aria-pressed="false">
                 <svg class="agc-icon-time-play" viewBox="0 0 24 24" width="14" height="14">
                   <path d="M6 4 L20 12 L6 20 Z" fill="currentColor"/>
                 </svg>
@@ -901,9 +1094,9 @@ class AstronomicalGlobeCard extends HTMLElement {
                   <rect x="14" y="4" width="5" height="16" fill="currentColor"/>
                 </svg>
               </button>
-              <button type="button" class="agc-solar-time-speed" title="Rychlost časové animace (klikni pro změnu)"></button>
-              <div class="agc-solar-time-label"></div>
-              <button type="button" class="agc-solar-time-today" title="Zpět na dnešek" style="display:none">Dnes</button>
+              <button type="button" class="agc-solar-time-speed" title="Time animation speed (click to change)"></button>
+              <input type="date" class="agc-solar-time-label agc-solar-time-date" title="Set date" aria-label="Set date">
+              <button type="button" class="agc-solar-time-today" title="Back to today" style="display:none">Today</button>
             </div>
             <div class="agc-error" hidden></div>
           </div>
@@ -969,10 +1162,10 @@ class AstronomicalGlobeCard extends HTMLElement {
     } catch (err) {
       // Selhání WebGL inicializace (chybí podpora, vyčerpaný kontext apod.)
       // dřív skončilo tichou prázdnou kartou - teď je vidět proč.
-      console.error('[astronomical-globe-card] Inicializace 3D vykreslování selhala:', err);
+      console.error('[astronomical-globe-card] Failed to initialize 3D rendering:', err);
       this._els.error.hidden = false;
       this._els.error.textContent =
-        'Nepodařilo se inicializovat 3D vykreslování (WebGL). Zkus obnovit stránku (Ctrl+Shift+R).';
+        'Failed to initialize 3D rendering (WebGL). Try reloading the page (Ctrl+Shift+R).';
       return;
     }
     this._viewMode = 'globe';
@@ -1028,6 +1221,11 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._dragTotalMove = 0;
     this._solarAzOffset = 0;
     this._solarElOffset = 0;
+    // Akumulovaný úhel dekorativního auto-orbitu kamery v solar view - roste
+    // jen dokud běží časová animace (_solarTimeSpeed !== 0), viz _frameSolar.
+    // Díky tomu "pauza" skutečně zastaví VEŠKERÝ pohyb scény, ne jen tok
+    // simulovaného data.
+    this._solarAutoAz = 0;
 
     // rad/px - horizontální tažení citlivější než vertikální (odpovídá tomu,
     // že otáčení kolem svislé osy působí přirozeněji než naklápění pólů).
@@ -1205,8 +1403,8 @@ class AstronomicalGlobeCard extends HTMLElement {
       lockBtn.classList.toggle('agc-btn-active', locked);
       lockBtn.setAttribute('aria-pressed', String(locked));
       lockBtn.title = locked
-        ? 'Automatický návrat pohledu je zastavený - klikni pro zapnutí zpět'
-        : 'Zastavit automatický návrat pohledu';
+        ? 'Automatic view return is stopped - click to turn back on'
+        : 'Stop automatic view return';
       if (this._els.lockIconUnlocked) this._els.lockIconUnlocked.hidden = locked;
       if (this._els.lockIconLocked) this._els.lockIconLocked.hidden = !locked;
     };
@@ -1242,6 +1440,7 @@ class AstronomicalGlobeCard extends HTMLElement {
     const playBtn = this._els.solarTimePlay;
     const speedBtn = this._els.solarTimeSpeed;
     const todayBtn = this._els.solarTimeToday;
+    const dateInput = this._els.solarTimeLabel;
     if (!playBtn || !speedBtn || !todayBtn) return;
 
     this._solarSimTime = null;
@@ -1270,6 +1469,27 @@ class AstronomicalGlobeCard extends HTMLElement {
       this._resetSolarTime();
       this._updateSolarPositions(new Date());
     };
+    // v0.17.0: přímé nastavení data přes nativní <input type="date">
+    // (`.agc-solar-time-date`, dřív jen zobrazovací popisek) - na rozdíl od
+    // play/rychlost/"Dnes" nemění _solarTimeSpeed, jen přeskočí simulovaný
+    // čas na vybraný den (hodina/minuta/sekunda se přebere z dosavadního
+    // _solarSimTime, nebo z reálného "teď", pokud animace ještě neběžela).
+    // Funguje shodně na pauze i za běhu animace - na pauze je potřeba
+    // pozice přepočítat hned ručně (_updateSolarPositions), protože
+    // _frameSolar() na pauze pozice nepřepočítává (viz oprava v0.16.0).
+    const onDateChange = (ev) => {
+      const val = ev.target.value;
+      if (!val) return;
+      const [y, m, d] = val.split('-').map(Number);
+      if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return;
+      const base = this._solarSimTime || new Date();
+      const next = new Date(base);
+      next.setFullYear(y, m - 1, d);
+      this._solarSimTime = next;
+      this._updateSolarPositions(this._solarSimTime);
+      this._updateSolarTimeUi();
+    };
+    if (dateInput) dateInput.addEventListener('change', onDateChange);
 
     playBtn.addEventListener('click', onPlayToggle);
     speedBtn.addEventListener('click', onSpeedCycle);
@@ -1279,6 +1499,7 @@ class AstronomicalGlobeCard extends HTMLElement {
       playBtn.removeEventListener('click', onPlayToggle);
       speedBtn.removeEventListener('click', onSpeedCycle);
       todayBtn.removeEventListener('click', onToday);
+      if (dateInput) dateInput.removeEventListener('change', onDateChange);
     };
 
     this._updateSolarTimeUi();
@@ -1311,7 +1532,7 @@ class AstronomicalGlobeCard extends HTMLElement {
 
     const playing = this._solarTimeSpeed !== 0;
     playBtn.setAttribute('aria-pressed', String(playing));
-    playBtn.title = playing ? 'Pozastavit časovou animaci' : 'Přehrát časovou animaci';
+    playBtn.title = playing ? 'Pause time animation' : 'Play time animation';
     if (this._els.solarTimeIconPlay) this._els.solarTimeIconPlay.hidden = playing;
     if (this._els.solarTimeIconPause) this._els.solarTimeIconPause.hidden = !playing;
 
@@ -1323,14 +1544,20 @@ class AstronomicalGlobeCard extends HTMLElement {
     const diverged = !!this._solarSimTime;
     if (this._els.solarTimeToday) this._els.solarTimeToday.style.display = diverged ? '' : 'none';
 
+    // v0.17.0: .agc-solar-time-label je nativní <input type="date"> - vždy
+    // drží ISO datum (YYYY-MM-DD) aktuálně platného dne (simulovaného,
+    // nebo živého "teď", pokud animace ještě neběžela), aby šlo kdykoli
+    // rovnou otevřít kalendář a přeskočit jinam (viz onDateChange v
+    // _bindSolarTimeControls). Lokální komponenty (ne .toISOString(), ta
+    // je v UTC a mohla by u některých časových pásem ukázat jiný den).
     if (this._els.solarTimeLabel) {
-      const newText = diverged
-        ? this._solarSimTime.toLocaleDateString('cs-CZ', { day: 'numeric', month: 'short', year: 'numeric' })
-        : '';
-      // Zbytečné přepisování stejného textu 60×/s (voláno i z _frameSolar()
-      // během animace) je jen plýtvání - přeskočit, když se nic nezměnilo.
-      if (this._els.solarTimeLabel.textContent !== newText) {
-        this._els.solarTimeLabel.textContent = newText;
+      const effectiveDate = this._solarSimTime || new Date();
+      const iso = `${effectiveDate.getFullYear()}-${String(effectiveDate.getMonth() + 1).padStart(2, '0')}-${String(effectiveDate.getDate()).padStart(2, '0')}`;
+      // Přeskočit needitovaný zápis (voláno i z _frameSolar() 60×/s během
+      // animace) - navíc by zápis stejné hodnoty do <input> za běhu mohl
+      // rušit uživatele, kdyby zrovna měl otevřený native picker.
+      if (this._els.solarTimeLabel.value !== iso) {
+        this._els.solarTimeLabel.value = iso;
       }
     }
   }
@@ -1350,7 +1577,7 @@ class AstronomicalGlobeCard extends HTMLElement {
     const solarBtn = this._els.solarBtn;
     if (solarBtn) {
       solarBtn.setAttribute('aria-pressed', String(isSolar));
-      solarBtn.title = isSolar ? 'Zpět na glóbus' : 'Zobrazit sluneční soustavu';
+      solarBtn.title = isSolar ? 'Back to globe' : 'Show Solar System view';
     }
     if (this._els.solarIconOn) this._els.solarIconOn.hidden = isSolar;
     if (this._els.solarIconOff) this._els.solarIconOff.hidden = !isSolar;
@@ -1530,6 +1757,18 @@ class AstronomicalGlobeCard extends HTMLElement {
       .agc-solar-time-label {
         font-size: 11px; color: #cfe3ff; min-width: 64px; text-align: center;
         font-variant-numeric: tabular-nums;
+      }
+      /* v0.17.0: .agc-solar-time-label je teď <input type="date"> (dřív jen
+         zobrazovací <div>) - dovoluje datum přímo NASTAVIT, ne jen posouvat
+         přehráváním. color-scheme:dark, ať je nativní kalendářová ikonka
+         prohlížeče vidět na tmavém pozadí lišty; zbytek resetuje výchozí
+         input styl, ať vypadá stejně jako předchozí textový popisek. */
+      .agc-solar-time-date {
+        border: none; background: transparent; padding: 2px 4px; border-radius: 8px;
+        color-scheme: dark; cursor: pointer;
+      }
+      .agc-solar-time-date:hover, .agc-solar-time-date:focus {
+        background: rgba(255,255,255,0.14); outline: none;
       }
 
       .agc-error {
@@ -1830,14 +2069,13 @@ class AstronomicalGlobeCard extends HTMLElement {
       });
       scene.add(new THREE.LineLoop(orbitGeometry, orbitMaterial));
 
-      // Planeta samotná
+      // Planeta samotná - procedurální povrch při přiblížení (v0.19.0, viz
+      // makePlanetMaterial výš); u Země se navíc, jakmile doletí síť,
+      // přepíše skutečnou NASA texturou (`_loadTextures()`), tohle je jen
+      // rychlý synchronní "fallback", ať nikdy není vidět holá barva.
       const visual = PLANET_VISUALS[key];
       const planetGeometry = new THREE.SphereGeometry(visual.radius, 24, 24);
-      const planetMaterial = new THREE.MeshStandardMaterial({
-        color: visual.color,
-        roughness: 0.9,
-        metalness: 0,
-      });
+      const planetMaterial = makePlanetMaterial(key, visual.color);
       const planetMesh = new THREE.Mesh(planetGeometry, planetMaterial);
       planetMesh.position.set(r, 0, 0); // dočasně na dráze - _updateUiText() ji hned přepíše na skutečnou pozici
       scene.add(planetMesh);
@@ -1884,7 +2122,10 @@ class AstronomicalGlobeCard extends HTMLElement {
 
         const moonMesh = new THREE.Mesh(
           new THREE.SphereGeometry(MOON_VISUAL_RADIUS, 16, 16),
-          new THREE.MeshStandardMaterial({ color: MOON_VISUAL_COLOR, roughness: 0.95, metalness: 0 })
+          // Procedurální rocky fallback (v0.19.0, viz makePlanetMaterial
+          // výš); přepíše se skutečnou fotkou Měsíce, jakmile doletí
+          // (`_loadTextures()` - stejný soubor moon.jpg jako u glóbusu).
+          makePlanetMaterial('moon', MOON_VISUAL_COLOR)
         );
         // Stejné nasvícení Sluncem (PointLight v počátku scény, viz výš)
         // jako u planet - žádný speciální "fázový" shader/textura navíc,
@@ -1975,7 +2216,7 @@ class AstronomicalGlobeCard extends HTMLElement {
 
       const plutoMesh = new THREE.Mesh(
         new THREE.SphereGeometry(PLUTO_VISUAL.radius, 16, 16),
-        new THREE.MeshStandardMaterial({ color: PLUTO_VISUAL.color, roughness: 0.9, metalness: 0 })
+        makePlanetMaterial('pluto', PLUTO_VISUAL.color) // procedurální rocky povrch, viz v0.19.0 výš
       );
       plutoMesh.position.set(r, 0, 0); // dočasně - _updateSolarPositions() ji hned přepíše
       scene.add(plutoMesh);
@@ -2110,19 +2351,19 @@ class AstronomicalGlobeCard extends HTMLElement {
       return;
     }
     panel.hidden = false;
-    if (this._els.solarInfoName) this._els.solarInfoName.textContent = PLANET_LABELS_CS[key] || key;
+    if (this._els.solarInfoName) this._els.solarInfoName.textContent = PLANET_LABELS_EN[key] || key;
 
     const positions = this._solarRawPositions;
     const p = positions && positions[key];
     const earth = positions && positions.earth;
 
     if (this._els.solarInfoSun) {
-      this._els.solarInfoSun.textContent = p ? `${formatAU(p.distanceAU)} od Slunce` : '';
+      this._els.solarInfoSun.textContent = p ? `${formatAU(p.distanceAU)} from the Sun` : '';
     }
     if (p && earth && key !== 'earth') {
       const dx = p.x - earth.x, dy = p.y - earth.y, dz = p.z - earth.z;
       const distAU = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      if (this._els.solarInfoEarth) this._els.solarInfoEarth.textContent = `${formatAU(distAU)} od Země`;
+      if (this._els.solarInfoEarth) this._els.solarInfoEarth.textContent = `${formatAU(distAU)} from Earth`;
 
       // Konjunkce/opozice (v0.12.0) - viz computeElongation()/
       // describeSolarAlignment() výš, počítáno ze stejných surových
@@ -2191,11 +2432,11 @@ class AstronomicalGlobeCard extends HTMLElement {
             setTimeout(() => attempt(true), 800);
             return;
           }
-          console.error(`[astronomical-globe-card] Nepodařilo se načíst texturu "${label}":`, url, err);
+          console.error(`[astronomical-globe-card] Failed to load texture "${label}":`, url, err);
           this._pendingTextureErrors = (this._pendingTextureErrors || 0) + 1;
           if (this._els && this._els.error) {
             this._els.error.hidden = false;
-            this._els.error.textContent = `Nepodařilo se načíst texturu (${label}). Zkontroluj připojení a zkus obnovit stránku.`;
+            this._els.error.textContent = `Failed to load texture (${label}). Check your connection and try reloading the page.`;
           }
         }
       );
@@ -2234,17 +2475,45 @@ class AstronomicalGlobeCard extends HTMLElement {
 
     this._loadTextureWithRetry(loader, `${base}earth-day.jpg${V}`, (tex) => {
       this._earthUniforms.dayTexture.value = setRawTex(tex);
-    }, 'den');
+    }, 'day');
     this._loadTextureWithRetry(loader, `${base}earth-night.jpg${V}`, (tex) => {
       this._earthUniforms.nightTexture.value = setRawTex(tex);
-    }, 'noc');
+    }, 'night');
     this._loadTextureWithRetry(loader, `${base}earth-clouds.jpg${V}`, (tex) => {
       this._cloudsUniforms.cloudsTexture.value = setRawTex(tex);
-    }, 'mraky');
+    }, 'clouds');
     this._loadTextureWithRetry(loader, `${base}moon.jpg${V}`, (tex) => {
       this._moonMesh.material.map = setColorTex(tex);
       this._moonMesh.material.needsUpdate = true;
-    }, 'Měsíc');
+      // v0.19.0: stejný soubor rovnou dozdobí i mini-Měsíc v solar view
+      // (dřív jen procedurální rocky fallback, viz makePlanetMaterial výš) -
+      // žádný druhý HTTP požadavek navíc, jen druhé přiřazení už staženého
+      // Texture objektu. Barvu materiálu je potřeba srovnat zpátky na bílou
+      // (makePlanetMaterial ji dává 0xffffff kvůli násobení s procedurální
+      // texturou, což platí i pro skutečnou fotku - jinak by vyšla ztmavená).
+      if (this._solarMoonMesh) {
+        this._solarMoonMesh.material.map = tex;
+        this._solarMoonMesh.material.color.set(0xffffff);
+        this._solarMoonMesh.material.needsUpdate = true;
+      }
+    }, 'Moon');
+    // v0.19.0: Země v solar view dostane při zblízka stejnou skutečnou NASA
+    // texturu jako glóbus, místo aby zůstala u procedurálního rocky
+    // fallbacku (viz makePlanetMaterial výš) - druhý TextureLoader.load() na
+    // STEJNOU URL jako den/noc výš, prohlížeč ji tak servíruje z vlastní
+    // HTTP cache (žádné znatelné dodatečné stahování). Na rozdíl od
+    // dayTexture uniformy u glóbusu (setRawTex/NoColorSpace, čte ji naše
+    // vlastní ShaderMaterial) tady jde o vestavěný MeshStandardMaterial,
+    // který sRGB<->lineární převod na výstupu dělá sám - proto setColorTex,
+    // stejně jako u Měsíce.
+    this._loadTextureWithRetry(loader, `${base}earth-day.jpg${V}`, (tex) => {
+      const earthMesh = this._solarPlanetMeshes && this._solarPlanetMeshes.earth;
+      if (earthMesh) {
+        earthMesh.material.map = setColorTex(tex);
+        earthMesh.material.color.set(0xffffff);
+        earthMesh.material.needsUpdate = true;
+      }
+    }, 'day');
     // Hvězdné pozadí se negeneruje z textury (viz earth-shaders.js), takže
     // tu není co dohrávat.
   }
@@ -2270,7 +2539,7 @@ class AstronomicalGlobeCard extends HTMLElement {
       return {
         lat: hass.config.latitude,
         lon: hass.config.longitude,
-        label: hass.config.location_name || 'Domov',
+        label: hass.config.location_name || 'Home',
         ok: true,
       };
     }
@@ -2285,8 +2554,8 @@ class AstronomicalGlobeCard extends HTMLElement {
       this._els.error.hidden = false;
       this._els.error.textContent =
         this._config.location_source === 'entity'
-          ? `Entita "${this._config.entity}" nemá k dispozici polohu (latitude/longitude).`
-          : 'Home Assistant nemá nastavenou domovskou polohu.';
+          ? `Entity "${this._config.entity}" has no available location (latitude/longitude).`
+          : 'Home Assistant has no home location configured.';
       this._location = null;
       return;
     }
@@ -2409,9 +2678,17 @@ class AstronomicalGlobeCard extends HTMLElement {
       this._solarSimTime = new Date(this._solarSimTime.getTime() + this._solarTimeSpeed * dt * MS_PER_DAY);
       this._updateSolarPositions(this._solarSimTime);
       this._updateSolarTimeUi();
+      // OPRAVA (nahlášeno uživatelem: "planety rotují, i když dám pauzu"):
+      // dekorativní auto-orbit kamery (_solarAutoAz) se teď akumuluje JEN
+      // dokud animace skutečně běží. Dřív se počítal přímo z absolutního
+      // `t` (čas od inicializace karty), takže běžel napořád bez ohledu na
+      // play/pauzu - i na "pauze" tak vypadalo, že se scéna dál pohybuje.
+      // Ruční tažení (_solarAzOffset) je na tomhle nezávislé a funguje i
+      // na pauze beze změny.
+      this._solarAutoAz += dt * SOLAR_CAMERA_ORBIT_SPEED;
     }
 
-    const az = t * SOLAR_CAMERA_ORBIT_SPEED + this._solarAzOffset;
+    const az = this._solarAutoAz + this._solarAzOffset;
     const el = Math.max(SOLAR_EL_MIN, Math.min(SOLAR_EL_MAX, SOLAR_CAMERA_ELEVATION + this._solarElOffset));
 
     const focusMesh = this._solarFocusKey ? this._solarPlanetMeshes[this._solarFocusKey] : null;
@@ -2566,6 +2843,11 @@ class AstronomicalGlobeCard extends HTMLElement {
       if (this._solarTimeSpeed === 0 && !this._solarSimTime) {
         this._updateSolarPositions(now);
       }
+      // v0.17.0: date-input v časové liště musí zůstat v sync i v živém
+      // režimu (jinak by po půlnoci ukazoval včerejší datum, dokud
+      // uživatel nesáhne na play/rychlost/"Dnes") - _updateSolarTimeUi()
+      // sama přeskočí zápis, pokud se ISO datum nezměnilo.
+      this._updateSolarTimeUi();
     }
 
     const hass = this._hass;
@@ -2593,21 +2875,21 @@ class AstronomicalGlobeCard extends HTMLElement {
 
     if (this._config.show_countdown) {
       if (times.polar === 'day') {
-        this._els.countdown.textContent = '☀️ Polární den';
+        this._els.countdown.textContent = '☀️ Polar day';
       } else if (times.polar === 'night') {
-        this._els.countdown.textContent = '🌑 Polární noc';
+        this._els.countdown.textContent = '🌑 Polar night';
       } else if (now < times.sunrise) {
         const h = (times.sunrise - now) / 3600000;
-        this._els.countdown.textContent = `🌅 do východu: ${formatDuration(h)}`;
+        this._els.countdown.textContent = `🌅 Sunrise in: ${formatDuration(h)}`;
       } else if (now < times.sunset) {
         const h = (times.sunset - now) / 3600000;
-        this._els.countdown.textContent = `🌇 do západu: ${formatDuration(h)}`;
+        this._els.countdown.textContent = `🌇 Sunset in: ${formatDuration(h)}`;
       } else {
         const tomorrow = new Date(now.getTime() + 86400000);
         const tTimes = getSunTimes(tomorrow, this._location.lat, this._location.lon);
         if (tTimes.sunrise) {
           const h = (tTimes.sunrise - now) / 3600000;
-          this._els.countdown.textContent = `🌅 do východu: ${formatDuration(h)}`;
+          this._els.countdown.textContent = `🌅 Sunrise in: ${formatDuration(h)}`;
         } else {
           this._els.countdown.textContent = '';
         }
@@ -2617,7 +2899,7 @@ class AstronomicalGlobeCard extends HTMLElement {
     }
 
     if (this._config.show_day_length && times.dayLengthHours != null) {
-      this._els.daylength.textContent = `Délka dne: ${formatDuration(times.dayLengthHours)}`;
+      this._els.daylength.textContent = `Day length: ${formatDuration(times.dayLengthHours)}`;
     } else {
       this._els.daylength.textContent = '';
     }
@@ -2721,8 +3003,8 @@ const EDITOR_SCHEMA = [
       select: {
         mode: 'dropdown',
         options: [
-          { value: 'home', label: 'Domovská poloha Home Assistanta' },
-          { value: 'entity', label: 'Sledovaná entita (person / device_tracker / zone)' },
+          { value: 'home', label: 'Home Assistant home location' },
+          { value: 'entity', label: 'Tracked entity (person / device_tracker / zone)' },
         ],
       },
     },
@@ -2789,29 +3071,29 @@ const EDITOR_SCHEMA = [
 ];
 
 const EDITOR_LABELS = {
-  title: 'Titulek (volitelné)',
-  location_source: 'Zdroj polohy',
-  entity: 'Entita polohy',
-  quality: 'Kvalita textur',
-  show_clouds: 'Zobrazit mraky',
-  show_moon: 'Zobrazit Měsíc',
-  show_sun_marker: 'Zobrazit značku Slunce',
-  show_stars: 'Zobrazit hvězdné pozadí',
-  show_countdown: 'Zobrazit odpočet do východu/západu',
-  show_day_length: 'Zobrazit délku dne',
-  rotation_wobble: 'Jemná animovaná rotace',
-  manual_rotation: 'Ruční otáčení tažením (myš/prst)',
-  celestial_reveal: 'Naklonit pohled ke Slunci/Měsíci u obzoru',
-  brightness: 'Jas (světla měst v noci)',
-  night_ambient: 'Podsvícení nočního oceánu',
-  saturation: 'Sytost barev',
-  contrast: 'Kontrast',
-  twilight_strength: 'Síla soumrakové záře',
-  cloud_opacity: 'Krytí mraků',
-  atmosphere_intensity: 'Síla atmosférické záře',
-  sky_intensity: 'Jas hvězd a mlhoviny',
-  marker_size: 'Velikost GPS značky',
-  accent_color: 'Barva zvýraznění (CSS, volitelné)',
+  title: 'Title (optional)',
+  location_source: 'Location source',
+  entity: 'Location entity',
+  quality: 'Texture quality',
+  show_clouds: 'Show clouds',
+  show_moon: 'Show Moon',
+  show_sun_marker: 'Show Sun marker',
+  show_stars: 'Show starfield',
+  show_countdown: 'Show sunrise/sunset countdown',
+  show_day_length: 'Show day length',
+  rotation_wobble: 'Gentle animated rotation',
+  manual_rotation: 'Manual rotation by dragging (mouse/touch)',
+  celestial_reveal: 'Tilt view toward the Sun/Moon near the horizon',
+  brightness: 'Brightness (city lights at night)',
+  night_ambient: 'Night ocean backlight',
+  saturation: 'Color saturation',
+  contrast: 'Contrast',
+  twilight_strength: 'Twilight glow strength',
+  cloud_opacity: 'Cloud opacity',
+  atmosphere_intensity: 'Atmosphere glow strength',
+  sky_intensity: 'Star/nebula brightness',
+  marker_size: 'GPS marker size',
+  accent_color: 'Accent color (CSS, optional)',
 };
 
 class AstronomicalGlobeCardEditor extends HTMLElement {
@@ -2866,7 +3148,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'astronomical-globe-card',
   name: 'Astronomical Globe Card',
-  description: 'Realistický 3D glóbus Země s reálným terminátorem, Měsícem a polohou GPS (styl Apple Watch Astronomie).',
+  description: 'Realistic 3D Earth globe with a real terminator, Moon, and GPS location (Apple Watch Astronomy style).',
   preview: false,
 });
 
