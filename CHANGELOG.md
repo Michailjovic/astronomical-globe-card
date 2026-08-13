@@ -4,6 +4,21 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
+## [0.12.0] - 2026-08-13
+
+### Added
+- Third batch of the Solar System view roadmap: **conjunction/opposition
+  text**. The planet info panel (v0.10.0) now shows a line describing its
+  current alignment relative to the Sun and Earth - computed from the same
+  raw heliocentric coordinates already used for the Earth-distance figure,
+  no extra astronomy needed. Mercury and Venus (orbiting closer to the Sun
+  than Earth) get inferior/superior conjunction; the other five planets get
+  conjunction (behind the Sun) and opposition (Earth between Sun and
+  planet - the best time to observe it, up all night). Outside those
+  threshold states, it shows the current elongation in degrees plus
+  whether the planet is currently an "evening" or "morning" object, based
+  on which side of the Sun it appears on in the sky.
+
 ## [0.11.0] - 2026-08-13
 
 ### Added

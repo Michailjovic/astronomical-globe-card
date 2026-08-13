@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.11.0
+ * @version 0.12.0
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -237,6 +237,19 @@
  * rychlostech škubala. Pokud je zrovna vybraná planeta (viz v0.10.0),
  * zaostření kamery ji přirozeně sleduje i během pohybu - žádný extra kód,
  * `focusMesh.position` se prostě mění pod rukama.
+ *
+ * v0.12.0 - třetí dávka roadmapy: KONJUNKCE/OPOZICE text v info panelu
+ * vybrané planety (viz `computeElongation`/`describeSolarAlignment` výš u
+ * `formatAU`). Elongace (úhel Slunce-Země-planeta) a geocentrická
+ * ekliptikální délka planety vůči Slunci se počítají ze stejných surových
+ * heliocentrických AU souřadnic jako vzdálenost od Země (v0.10.0) - žádná
+ * nová astronomie navíc, jen jiný pohled na tytéž vektory. Merkur/Venuše
+ * (dráha blíž Slunci než Země) mají dolní/horní konjunkci, ostatní planety
+ * konjunkci (za Sluncem) a opozici (Země mezi Sluncem a planetou -
+ * nejlepší čas k pozorování, planeta na obloze celou noc); mimo tyhle
+ * prahové stavy se ukáže jen "XX° od Slunce - viditelný večer/ráno" podle
+ * toho, jestli je planeta východně (večernice) nebo západně (jitřenka) od
+ * Slunce na obloze.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -244,9 +257,9 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.11.0';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.11.0';
-import { getPlanetPositions, PLANET_ORDER, PLANET_MEAN_DISTANCE_AU } from './lib/planets.js?v=0.11.0';
+import * as THREE from './lib/three.module.min.js?v=0.12.0';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.12.0';
+import { getPlanetPositions, PLANET_ORDER, PLANET_MEAN_DISTANCE_AU } from './lib/planets.js?v=0.12.0';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -256,9 +269,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.11.0';
+} from './lib/earth-shaders.js?v=0.12.0';
 
-const CARD_VERSION = '0.11.0';
+const CARD_VERSION = '0.12.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -451,6 +464,61 @@ function formatAU(distanceAU) {
   const kmText = km >= 1e6 ? `${(km / 1e6).toFixed(1)} mil. km` : `${Math.round(km)} km`;
   const auText = distanceAU.toFixed(distanceAU < 10 ? 2 : 1);
   return `${auText} AU (${kmText})`;
+}
+
+// -- Konjunkce/opozice text v info panelu solar view (v0.12.0) ------------
+// Merkur a Venuše obíhají BLÍŽ Slunci než Země ("dolní" planety) - mají
+// dva druhy konjunkce (mezi Zemí a Sluncem / za Sluncem), ale nikdy
+// opozici (nikdy nemůžou být na obloze přesně naproti Slunci). Ostatní
+// ("horní") planety mají naopak jen jeden typ konjunkce (za Sluncem) a k
+// tomu opozici (Země mezi Sluncem a planetou - nejlepší čas k pozorování).
+const SOLAR_INFERIOR_PLANETS = new Set(['mercury', 'venus']);
+const SOLAR_CONJUNCTION_THRESHOLD_DEG = 6;
+const SOLAR_OPPOSITION_THRESHOLD_DEG = 6;
+
+/**
+ * Elongace (úhel Slunce-Země-planeta, 0-180°) a geocentrická ekliptikální
+ * délka planety MÍNUS Slunce (kladná = planeta východně od Slunce =
+ * "večernice", vidět večer po západu; záporná = západně = "jitřenka",
+ * vidět ráno před východem - standardní astronomická konvence, ekliptikální
+ * délka roste ve směru oběžného pohybu). Ignoruje sklon drah k ekliptice
+ * (z-složku) - u elongace/délky na pár stupňů přesnosti zanedbatelná chyba,
+ * naprosto dostatečná pro popisný text, ne přesné efemeridy.
+ */
+function computeElongation(p, earth) {
+  const vx = p.x - earth.x, vy = p.y - earth.y, vz = p.z - earth.z;
+  const sx = -earth.x, sy = -earth.y, sz = -earth.z; // Země -> Slunce (Slunce je v počátku)
+  const vLen = Math.sqrt(vx * vx + vy * vy + vz * vz) || 1;
+  const sLen = Math.sqrt(sx * sx + sy * sy + sz * sz) || 1;
+  const cosElong = (vx * sx + vy * sy + vz * sz) / (vLen * sLen);
+  const elongationDeg = Math.acos(Math.max(-1, Math.min(1, cosElong))) * (180 / Math.PI);
+
+  const sunGeoLon = Math.atan2(sy, sx) * (180 / Math.PI);
+  const planetGeoLon = Math.atan2(vy, vx) * (180 / Math.PI);
+  let diffLon = planetGeoLon - sunGeoLon;
+  diffLon = ((diffLon + 180) % 360 + 360) % 360 - 180; // normalizace do (-180, 180]
+
+  return { elongationDeg, diffLon, distToEarthAU: vLen };
+}
+
+/** Popisný text k aktuální poloze planety vůči Slunci a Zemi - viz
+ * komentář u SOLAR_INFERIOR_PLANETS/computeElongation výš. */
+function describeSolarAlignment(key, elong, earthDistanceAU) {
+  const isInferior = SOLAR_INFERIOR_PLANETS.has(key);
+
+  if (elong.elongationDeg < SOLAR_CONJUNCTION_THRESHOLD_DEG) {
+    if (isInferior) {
+      return elong.distToEarthAU < earthDistanceAU
+        ? 'dolní konjunkce (mezi Zemí a Sluncem)'
+        : 'horní konjunkce (za Sluncem)';
+    }
+    return 'konjunkce se Sluncem - teď špatně pozorovatelný';
+  }
+  if (!isInferior && 180 - elong.elongationDeg < SOLAR_OPPOSITION_THRESHOLD_DEG) {
+    return 'opozice - ideální čas k pozorování, na obloze celou noc';
+  }
+  const side = elong.diffLon > 0 ? 'večer po západu Slunce' : 'ráno před východem Slunce';
+  return `${Math.round(elong.elongationDeg)}° od Slunce - viditelný ${side}`;
 }
 
 function formatDuration(hoursFloat) {
@@ -720,6 +788,7 @@ class AstronomicalGlobeCard extends HTMLElement {
               <div class="agc-solar-info-name"></div>
               <div class="agc-solar-info-row agc-solar-info-sun"></div>
               <div class="agc-solar-info-row agc-solar-info-earth"></div>
+              <div class="agc-solar-info-row agc-solar-info-align"></div>
             </div>
             <div class="agc-solar-time" style="display:none">
               <button type="button" class="agc-btn agc-solar-time-play" title="Přehrát časovou animaci" aria-label="Přehrát časovou animaci" aria-pressed="false">
@@ -768,6 +837,7 @@ class AstronomicalGlobeCard extends HTMLElement {
       solarInfoName: this.shadowRoot.querySelector('.agc-solar-info-name'),
       solarInfoSun: this.shadowRoot.querySelector('.agc-solar-info-sun'),
       solarInfoEarth: this.shadowRoot.querySelector('.agc-solar-info-earth'),
+      solarInfoAlign: this.shadowRoot.querySelector('.agc-solar-info-align'),
       solarTimeBar: this.shadowRoot.querySelector('.agc-solar-time'),
       solarTimePlay: this.shadowRoot.querySelector('.agc-solar-time-play'),
       solarTimeIconPlay: this.shadowRoot.querySelector('.agc-icon-time-play'),
@@ -1795,14 +1865,21 @@ class AstronomicalGlobeCard extends HTMLElement {
     if (this._els.solarInfoSun) {
       this._els.solarInfoSun.textContent = p ? `${formatAU(p.distanceAU)} od Slunce` : '';
     }
-    if (this._els.solarInfoEarth) {
-      if (p && earth && key !== 'earth') {
-        const dx = p.x - earth.x, dy = p.y - earth.y, dz = p.z - earth.z;
-        const distAU = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        this._els.solarInfoEarth.textContent = `${formatAU(distAU)} od Země`;
-      } else {
-        this._els.solarInfoEarth.textContent = '';
+    if (p && earth && key !== 'earth') {
+      const dx = p.x - earth.x, dy = p.y - earth.y, dz = p.z - earth.z;
+      const distAU = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (this._els.solarInfoEarth) this._els.solarInfoEarth.textContent = `${formatAU(distAU)} od Země`;
+
+      // Konjunkce/opozice (v0.12.0) - viz computeElongation()/
+      // describeSolarAlignment() výš, počítáno ze stejných surových
+      // heliocentrických souřadnic jako vzdálenost od Země o pár řádků výš.
+      if (this._els.solarInfoAlign) {
+        const elong = computeElongation(p, earth);
+        this._els.solarInfoAlign.textContent = describeSolarAlignment(key, elong, earth.distanceAU);
       }
+    } else {
+      if (this._els.solarInfoEarth) this._els.solarInfoEarth.textContent = '';
+      if (this._els.solarInfoAlign) this._els.solarInfoAlign.textContent = '';
     }
   }
 
