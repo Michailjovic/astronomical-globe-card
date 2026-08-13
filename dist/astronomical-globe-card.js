@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.9.0
+ * @version 0.10.0
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -192,6 +192,39 @@
  * dvojice scene+camera se pošle do `renderer.render()`) - žádný druhý GPU
  * kontext navíc. Zatím bez ručního otáčení (na rozdíl od glóbusu) - jen
  * pomalá dekorativní orbitální kamera kolem Slunce.
+ *
+ * v0.9.1 - oprava: solar tlačítko z v0.9.0 leželo ve vlastním rohu vlevo
+ * nahoře přesně přes datum (`.agc-overlay-top` tam začíná text). Přesunuto
+ * do `.agc-view-controls` vpravo nahoře, ke stávajícím reset/zámek
+ * tlačítkům - tenhle roh byl volný a datum je zarovnané doleva, takže tam
+ * ke kolizi dojít nemůže. Container `.agc-view-controls` teď zůstává vždy
+ * viditelný (dřív se celý schovával podle `manual_rotation`/pohledu, což by
+ * smazalo i solar tlačítko) - viditelnost reset/zámek tlačítek uvnitř řeší
+ * nová `_updateRotationButtonsVisibility()`. Mimochodem opraven i drobný
+ * drift: import `earth-shaders.js` zůstal na cache-busting `?v=0.8.0` i po
+ * pozdějších bumpech verze - sladěno zpět s `CARD_VERSION`.
+ *
+ * v0.10.0 - pohled "sluneční soustava" umí víc, první dávka z delší
+ * roadmapy nápadů (viz `_frameSolar`/`_selectSolarPlanet`):
+ * 1) TAŽENÍ - na rozdíl od glóbusu je tohle klasická orbitální kamera
+ *    dívající se na pevný bod, ne trackball, takže stačí jednoduchý az/el
+ *    offset (`_solarAzOffset`/`_solarElOffset`) navrch pořád běžící
+ *    pomalé auto-orbity - žádný gimbal lock/pól tu nehrozí, jen je elevace
+ *    kvůli čitelnosti scény klampovaná (SOLAR_EL_MIN/MAX).
+ * 2) KLIK NA PLANETU - raycasting (`_raycastSolarPlanetAt`) rozliší krátký
+ *    klik od tažení (posun pod SOLAR_CLICK_MAX_MOVE_PX), kamera se plynule
+ *    "doletí" přiblížit na vybranou planetu (frame-rate nezávislá
+ *    exponenciála, `SOLAR_FOCUS_TIME_CONSTANT`) a zobrazí se info panel se
+ *    jménem + vzdáleností od Slunce a od Země (AU i mil. km,
+ *    `formatAU()`) - vzdálenost od Země se počítá ze SUROVÝCH
+ *    heliocentrických AU souřadnic (`_solarRawPositions`), ne ze
+ *    zobrazovací odmocninové škály, jinak by vyšla nesmyslně.
+ * 3) ZVÝRAZNĚNÍ ZEMĚ - jemné poloprůhledné halo (reuse
+ *    `makeMarkerTexture()`) kolem Země, ať je v přehledu celé soustavy
+ *    hned vidět "kde jsme".
+ * Zbytek nápadů z brainstormingu (časová animace, konjunkce/opozice text,
+ * Měsíc jako mini-model u Země, pás asteroidů, "co je dnes vidět ze Země")
+ * zůstává na roadmapě pro další verze.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -199,9 +232,9 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.9.0';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.9.0';
-import { getPlanetPositions, PLANET_ORDER, PLANET_MEAN_DISTANCE_AU } from './lib/planets.js?v=0.9.0';
+import * as THREE from './lib/three.module.min.js?v=0.10.0';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.10.0';
+import { getPlanetPositions, PLANET_ORDER, PLANET_MEAN_DISTANCE_AU } from './lib/planets.js?v=0.10.0';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -211,9 +244,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.8.0';
+} from './lib/earth-shaders.js?v=0.10.0';
 
-const CARD_VERSION = '0.9.0';
+const CARD_VERSION = '0.10.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -300,6 +333,34 @@ const PLANET_LABELS_CS = {
 // tenhle pohled zatím nejde ručně otáčet, viz poznámka u v0.9.0).
 const SOLAR_CAMERA_ORBIT_SPEED = (2 * Math.PI) / 90; // 1 otočka za 90 s
 const SOLAR_CAMERA_ELEVATION = degToRad(32);
+// Ruční otáčení v pohledu sluneční soustavy (v0.10.0) - na rozdíl od
+// trackballu u glóbusu je tohle klasická orbitální kamera dívající se na
+// pevný bod (Slunce, resp. vybraná planeta - viz _solarFocusPoint), takže
+// tu žádný gimbal-lock/pól problém není: stačí azimut+elevace jako dva
+// jednoduché offsety navrch pořád běžící pomalé auto-orbity
+// (`t * SOLAR_CAMERA_ORBIT_SPEED`), stejný princip jako u prvotní (v0.5.0)
+// verze rotace glóbu. Elevace se čistě kvůli čitelnosti scény klampuje, ať
+// kamera nezaletí pod/nad rovinu ekliptiky tak, že by se všechny dráhy
+// zdegenerovaly do čáry.
+const SOLAR_DRAG_SENS_AZ = 0.012;
+const SOLAR_DRAG_SENS_EL = 0.008;
+const SOLAR_EL_MIN = degToRad(8);
+const SOLAR_EL_MAX = degToRad(85);
+// Klik (ne tažení) na planetu v solar view ji "vybere" - viz
+// _selectSolarPlanet()/_raycastSolarPlanetAt(). Pohyb menší než tenhle práh
+// (v px) se považuje za klik, větší za tažení - běžná tap-vs-drag heuristika.
+const SOLAR_CLICK_MAX_MOVE_PX = 6;
+// Jak plynule kamera "doletí" na nově vybraný cíl (frame-rate nezávislá
+// exponenciální aproximace, stejný princip jako MANUAL_RETURN_TIME_CONSTANT).
+const SOLAR_FOCUS_TIME_CONSTANT = 0.45;
+// Cílová vzdálenost kamery od vybrané planety = její vizuální poloměr (viz
+// PLANET_VISUALS) krát tenhle násobek - dost blízko na "zoom", ale ne tak
+// blízko, aby planeta zaplnila celý záběr/oříznula se do kamery.
+const SOLAR_FOCUS_DIST_FACTOR = 7;
+const SOLAR_FOCUS_MIN_DIST = 0.45;
+// Sdílený referenční bod "beze změny" (Slunce, počátek scény) pro
+// _solarFocusPoint, když není vybraná žádná planeta - nikdy se nemutuje.
+const SOLAR_ORIGIN = new THREE.Vector3(0, 0, 0);
 
 const DEFAULT_CONFIG = {
   type: 'custom:astronomical-globe-card',
@@ -359,6 +420,17 @@ function triangleWeight(value, peak, halfWidth) {
   const d = Math.abs(value - peak);
   if (d >= halfWidth) return 0;
   return 1 - d / halfWidth;
+}
+
+// 1 AU v km (definice IAU, ne zaokrouhleno) - pro info panel v solar view
+// (v0.11.0), aby vzdálenosti šly zobrazit lidsky čitelně v obou jednotkách.
+const KM_PER_AU = 149597870.7;
+
+function formatAU(distanceAU) {
+  const km = distanceAU * KM_PER_AU;
+  const kmText = km >= 1e6 ? `${(km / 1e6).toFixed(1)} mil. km` : `${Math.round(km)} km`;
+  const auText = distanceAU.toFixed(distanceAU < 10 ? 2 : 1);
+  return `${auText} AU (${kmText})`;
 }
 
 function formatDuration(hoursFloat) {
@@ -578,7 +650,7 @@ class AstronomicalGlobeCard extends HTMLElement {
               <div class="agc-date"></div>
               <div class="agc-time"></div>
             </div>
-            <div class="agc-mode-toggle">
+            <div class="agc-view-controls">
               <button type="button" class="agc-btn agc-btn-solar" title="Zobrazit sluneční soustavu" aria-label="Zobrazit sluneční soustavu" aria-pressed="false">
                 <svg class="agc-icon-solar-on" viewBox="0 0 24 24" width="16" height="16">
                   <circle cx="12" cy="12" r="2.6" fill="currentColor"/>
@@ -589,8 +661,6 @@ class AstronomicalGlobeCard extends HTMLElement {
                   <path d="M15 4 L7 12 L15 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
               </button>
-            </div>
-            <div class="agc-view-controls">
               <button type="button" class="agc-btn agc-btn-reset" title="Vrátit pohled na domovskou polohu" aria-label="Vrátit pohled na domovskou polohu">
                 <svg viewBox="0 0 24 24" width="16" height="16">
                   <circle cx="12" cy="12" r="5" fill="none" stroke="currentColor" stroke-width="2"/>
@@ -625,6 +695,12 @@ class AstronomicalGlobeCard extends HTMLElement {
               <div class="agc-row agc-countdown"></div>
               <div class="agc-row agc-daylength"></div>
             </div>
+            <div class="agc-solar-info" hidden>
+              <button type="button" class="agc-solar-info-close" aria-label="Zavřít detail planety">✕</button>
+              <div class="agc-solar-info-name"></div>
+              <div class="agc-solar-info-row agc-solar-info-sun"></div>
+              <div class="agc-solar-info-row agc-solar-info-earth"></div>
+            </div>
             <div class="agc-error" hidden></div>
           </div>
         </div>
@@ -653,12 +729,25 @@ class AstronomicalGlobeCard extends HTMLElement {
       overlayBottom: this.shadowRoot.querySelector('.agc-overlay-bottom'),
       cornerBl: this.shadowRoot.querySelector('.agc-corner-bl'),
       cornerBr: this.shadowRoot.querySelector('.agc-corner-br'),
+      solarInfo: this.shadowRoot.querySelector('.agc-solar-info'),
+      solarInfoClose: this.shadowRoot.querySelector('.agc-solar-info-close'),
+      solarInfoName: this.shadowRoot.querySelector('.agc-solar-info-name'),
+      solarInfoSun: this.shadowRoot.querySelector('.agc-solar-info-sun'),
+      solarInfoEarth: this.shadowRoot.querySelector('.agc-solar-info-earth'),
     };
 
     this._clock = new THREE.Clock();
     this._wobbleSeed = Math.random() * 1000;
     this._bindDragRotation();
     this._bindViewControls();
+    if (this._els.solarInfoClose) {
+      // Křížek v info panelu = stejná akce jako klik na už vybranou planetu
+      // (odvybrat) - viz _selectSolarPlanet().
+      this._els.solarInfoClose.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        this._selectSolarPlanet(null);
+      });
+    }
 
     try {
       this._initThree();
@@ -715,6 +804,16 @@ class AstronomicalGlobeCard extends HTMLElement {
     // ID pointeru, který právě "drží" rotaci - viz onPointerDown/onPointerMove
     // níž, řeší chaos při dvouprstém dotyku (pinch).
     this._activePointerId = null;
+    // "globe" (kvaternion/trackball, viz výše) nebo "solar" (jednoduchý
+    // az/el offset, viz _solarAzOffset/_solarElOffset a _frameSolar) - které
+    // tažení právě probíhá se rozhoduje při stisku podle `_viewMode` a musí
+    // se tak i dokončit, i kdyby uživatel mezitím tlačítkem přepnul pohled.
+    this._dragMode = null;
+    // Souhrnný posun (v px) od stisku - odlišuje krátký KLIK (výběr planety
+    // v solar view, viz SOLAR_CLICK_MAX_MOVE_PX) od skutečného tažení.
+    this._dragTotalMove = 0;
+    this._solarAzOffset = 0;
+    this._solarElOffset = 0;
 
     // rad/px - horizontální tažení citlivější než vertikální (odpovídá tomu,
     // že otáčení kolem svislé osy působí přirozeněji než naklápění pólů).
@@ -722,7 +821,11 @@ class AstronomicalGlobeCard extends HTMLElement {
     const SENS_EL = 0.008;
 
     const onPointerDown = (ev) => {
-      if (!this._config.manual_rotation) return;
+      const solar = this._viewMode === 'solar';
+      // V solar view tažení/klik funguje vždy (není to konfigurovatelné jako
+      // `manual_rotation` u glóbusu - žádný pól/gimbal problém tu nehrozí a
+      // klik na planetu je zároveň hlavní způsob interakce s tímhle pohledem).
+      if (!solar && !this._config.manual_rotation) return;
       if (ev.pointerType === 'mouse' && ev.button !== 0) return;
       // SKUTEČNÁ PŘÍČINA "zbláznění" při dotyku druhým prstem (pinch): Pointer
       // Events API posílá SAMOSTATNÝ pointerdown pro KAŽDÝ prst (různé
@@ -738,6 +841,8 @@ class AstronomicalGlobeCard extends HTMLElement {
       // na canvasu stejně už brání dělat prohlížeči/OS na úrovni stránky).
       if (this._dragging) return;
       this._dragging = true;
+      this._dragMode = solar ? 'solar' : 'globe';
+      this._dragTotalMove = 0;
       this._activePointerId = ev.pointerId;
       // Chycení glóbu rukou vždy zruší čekající požadavek na reset (tlačítko
       // "vrátit domů") - jinak by po puštění mohl přijít neočekávaný skok
@@ -754,6 +859,24 @@ class AstronomicalGlobeCard extends HTMLElement {
       const dy = ev.clientY - this._dragLastY;
       this._dragLastX = ev.clientX;
       this._dragLastY = ev.clientY;
+      this._dragTotalMove += Math.hypot(dx, dy);
+
+      if (this._dragMode === 'solar') {
+        // Klasická orbitální kamera (viz konstanty u SOLAR_CAMERA_ORBIT_SPEED
+        // výš) - žádný trackball/kvaternion tu není potřeba, protože se vždy
+        // dívá na pevný bod (Slunce nebo vybraná planeta), takže nehrozí
+        // gimbal lock ani "flip" u pólu jako u glóbusu. Znaménko azimutu
+        // stejné jako u glóbusu (přirozený pocit "otoč rukou"), elevace se
+        // rovnou klampuje při tažení (ne až při vykreslení), ať dragování
+        // dál stejným směrem po dosažení limitu nevytváří mrtvou zónu, než
+        // se to při obrácení směru zase "rozjede".
+        this._solarAzOffset -= dx * SOLAR_DRAG_SENS_AZ;
+        const desiredEl = SOLAR_CAMERA_ELEVATION + this._solarElOffset - dy * SOLAR_DRAG_SENS_EL;
+        const clampedEl = Math.max(SOLAR_EL_MIN, Math.min(SOLAR_EL_MAX, desiredEl));
+        this._solarElOffset = clampedEl - SOLAR_CAMERA_ELEVATION;
+        this._lastInteractionT = this._clock.getElapsedTime();
+        return;
+      }
 
       // Osy tažení odvozené z AKTUÁLNÍ (dosavadní) orientace, ne z pevné
       // globální osy Y - tohle je to jediné, co v arcballu nahrazuje starý
@@ -806,11 +929,16 @@ class AstronomicalGlobeCard extends HTMLElement {
       // Pozvednutí/zrušení DRUHÉHO (ignorovaného) prstu nesmí ukončit
       // tažení prvního - ten pořád může tisknout dál.
       if (!this._dragging || ev.pointerId !== this._activePointerId) return;
+      const wasClick = this._dragMode === 'solar' && this._dragTotalMove <= SOLAR_CLICK_MAX_MOVE_PX;
       this._dragging = false;
       this._activePointerId = null;
       this._lastInteractionT = this._clock.getElapsedTime();
       el.classList.remove('agc-dragging');
       try { el.releasePointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+      // Skoro-žádný pohyb mezi stiskem a puštěním v solar view = klik na
+      // planetu (výběr), ne tažení kamery - viz _handleSolarClick().
+      if (wasClick) this._handleSolarClick(ev.clientX, ev.clientY);
+      this._dragMode = null;
     };
 
     el.addEventListener('pointerdown', onPointerDown);
@@ -907,19 +1035,41 @@ class AstronomicalGlobeCard extends HTMLElement {
     if (this._els.solarIconOn) this._els.solarIconOn.hidden = isSolar;
     if (this._els.solarIconOff) this._els.solarIconOff.hidden = !isSolar;
 
-    // Ovládání a údaje vázané na glóbus/domovskou polohu (reset/zámek
-    // rotace, odpočet do východu/západu, délka dne, fáze Měsíce, poloha na
-    // dráze) nedávají v pohledu sluneční soustavy smysl - schovat.
-    if (this._els.viewControls) {
-      this._els.viewControls.style.display = isSolar ? 'none' : (this._config.manual_rotation ? 'flex' : 'none');
-    }
+    // Údaje vázané na domovskou polohu (odpočet do východu/západu, délka
+    // dne, fáze Měsíce, poloha na dráze) nedávají v pohledu sluneční
+    // soustavy smysl - schovat. Tlačítko pro přepnutí pohledu je ale v
+    // `.agc-view-controls` společně s reset/zámek tlačítky a musí zůstat
+    // vidět vždy - viditelnost jednotlivých tlačítek uvnitř řeší
+    // `_updateRotationButtonsVisibility()`.
+    this._updateRotationButtonsVisibility();
     if (this._els.overlayBottom) this._els.overlayBottom.style.display = isSolar ? 'none' : '';
     if (this._els.cornerBl) this._els.cornerBl.style.display = isSolar ? 'none' : '';
     if (this._els.cornerBr) this._els.cornerBr.style.display = isSolar ? 'none' : '';
 
     if (isSolar) {
       this._updateSolarPositions(new Date());
+    } else {
+      // Odchod z pohledu sluneční soustavy zruší výběr planety (v0.11.0) -
+      // ať se při příštím otevření startuje vždy z přehledu celé soustavy,
+      // ne "napůl přiblíženo" na to, co bylo vybrané minule.
+      this._selectSolarPlanet(null);
     }
+  }
+
+  /**
+   * Reset/zámek tlačítka v `.agc-view-controls` dávají smysl jen v pohledu
+   * glóbu a jen když je `manual_rotation` zapnuté (jinak by nebylo co
+   * resetovat/zamykat) - schovávají se jednotlivě. Tlačítko pro přepnutí
+   * sluneční soustavy je ve stejném kontejneru, ale musí zůstat vidět vždy,
+   * takže se celý `.agc-view-controls` už dál jako celek neschovává (dřívější
+   * bug: v0.9.0 skryl i solar tlačítko a to se navíc vizuálně srazilo s
+   * datem, když bylo ve vlastním rohu - viz CHANGELOG v0.9.1).
+   */
+  _updateRotationButtonsVisibility() {
+    const show = this._viewMode !== 'solar' && !!this._config.manual_rotation;
+    const display = show ? '' : 'none';
+    if (this._els.resetBtn) this._els.resetBtn.style.display = display;
+    if (this._els.lockBtn) this._els.lockBtn.style.display = display;
   }
 
   _css() {
@@ -983,10 +1133,6 @@ class AstronomicalGlobeCard extends HTMLElement {
       .agc-corner-br { right: 14px; bottom: 14px; }
       .agc-orbit-icon { width: 100%; height: 100%; }
 
-      .agc-mode-toggle {
-        position: absolute; top: 10px; left: 10px; z-index: 3;
-        display: flex; gap: 6px;
-      }
       .agc-view-controls {
         position: absolute; top: 10px; right: 10px; z-index: 3;
         display: flex; gap: 6px;
@@ -1006,6 +1152,33 @@ class AstronomicalGlobeCard extends HTMLElement {
       .agc-btn-lock.agc-btn-active {
         background: var(--agc-accent, #33e6b0); color: #06231a; opacity: 1;
       }
+
+      /* Info panel po kliknutí na planetu v solar view (v0.11.0) - na
+         rozdíl od .agc-overlay-top/-bottom potřebuje pointer-events (má
+         zavírací křížek), a stejně jako .agc-error MUSÍ mít [hidden]
+         pravidlo s vyšší specificitou, jinak "hidden" atribut tiše
+         nezabere - viz dlouhá poznámka u .agc-error[hidden] níž (stejný
+         bug, jednou už tady nahlášený jako "tmavé sklo přes celou kartu"). */
+      .agc-solar-info {
+        position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%);
+        z-index: 3; max-width: 78%; padding: 10px 32px 10px 14px;
+        background: rgba(0,0,0,0.55); border-radius: 10px;
+        color: #fff; text-align: left; pointer-events: auto;
+      }
+      .agc-solar-info[hidden] { display: none; }
+      .agc-solar-info-name {
+        font-size: 14px; font-weight: 700; letter-spacing: 0.3px; margin-bottom: 2px;
+      }
+      .agc-solar-info-row {
+        font-size: 12px; opacity: 0.85; line-height: 1.4; white-space: nowrap;
+      }
+      .agc-solar-info-row:empty { display: none; }
+      .agc-solar-info-close {
+        position: absolute; top: 2px; right: 4px; width: 22px; height: 22px;
+        border: none; border-radius: 50%; background: transparent; color: #fff;
+        opacity: 0.6; cursor: pointer; font-size: 13px; line-height: 1; padding: 0;
+      }
+      .agc-solar-info-close:hover { opacity: 1; background: rgba(255,255,255,0.12); }
 
       .agc-error {
         position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -1059,12 +1232,11 @@ class AstronomicalGlobeCard extends HTMLElement {
       const markerSize = cfg.marker_size ?? DEFAULT_CONFIG.marker_size;
       this._markerSprite.scale.set(markerSize, markerSize, 1);
     }
-    if (this._els.viewControls) {
-      // Tlačítka "vrátit domů"/"zámek" dávají smysl jen když je ruční
-      // otáčení vůbec zapnuté - jinak by natáčet nešlo, takže by neměly co
-      // resetovat/zamykat.
-      this._els.viewControls.style.display = cfg.manual_rotation ? 'flex' : 'none';
-    }
+    // Tlačítka "vrátit domů"/"zámek" dávají smysl jen když je ruční
+    // otáčení vůbec zapnuté a jsme v pohledu glóbu - jinak by natáčet
+    // nešlo, takže by neměly co resetovat/zamykat. Solar tlačítko ve
+    // stejném `.agc-view-controls` kontejneru zůstává vidět vždy.
+    this._updateRotationButtonsVisibility();
   }
 
   // -- three.js inicializace -------------------------------------------------
@@ -1248,6 +1420,14 @@ class AstronomicalGlobeCard extends HTMLElement {
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 200);
     this._solarCamera = camera;
 
+    // Stav "zaostření" na planetu po kliknutí (v0.11.0) - viz
+    // _selectSolarPlanet()/_frameSolar(). Bez výběru kamera obíhá kolem
+    // počátku scény (Slunce) v SOLAR_DISPLAY_MAX_R*1.55.
+    this._solarFocusKey = null;
+    this._solarFocusPoint = new THREE.Vector3(0, 0, 0);
+    this._solarFocusDist = SOLAR_DISPLAY_MAX_R * 1.55;
+    this._raycaster = new THREE.Raycaster();
+
     scene.add(new THREE.AmbientLight(0x445066, 1.3));
     const sunLight = new THREE.PointLight(0xfff2d9, 2.4, 0, 0.4);
     scene.add(sunLight);
@@ -1311,6 +1491,22 @@ class AstronomicalGlobeCard extends HTMLElement {
       scene.add(planetMesh);
       this._solarPlanetMeshes[key] = planetMesh;
 
+      if (key === 'earth') {
+        // Zvýraznění Země (v0.11.0) - v přehledu celé soustavy je jinak
+        // nerozeznatelná od Marsu/Venuše na první pohled, tohle hned
+        // napoví "tady jsme". Reuse `makeMarkerTexture()` (stejný princip
+        // jako GPS značka na glóbusu), jen jako jemné poloprůhledné halo
+        // (`AdditiveBlending`, žádný ostrý bílý okraj) místo ostré tečky.
+        const earthHighlight = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: makeMarkerTexture('rgba(125, 220, 255, 0.6)'),
+          transparent: true,
+          depthTest: false,
+          blending: THREE.AdditiveBlending,
+        }));
+        earthHighlight.scale.set(visual.radius * 5, visual.radius * 5, 1);
+        planetMesh.add(earthHighlight);
+      }
+
       if (visual.ring) {
         // Jednoduchý prstenec (Saturn) - mírně nakloněný, ať je i z
         // shora-šikma úhlu kamery vidět jako prstenec, ne jako čárka.
@@ -1338,6 +1534,10 @@ class AstronomicalGlobeCard extends HTMLElement {
   _updateSolarPositions(now) {
     if (!this._solarPlanetMeshes) return;
     const positions = getPlanetPositions(now);
+    // Uloženo stranou (surové AU souřadnice, ne scale-nutá pozice v scéně) -
+    // info panel (`_updateSolarInfoPanel`) z toho počítá SKUTEČNOU vzdálenost
+    // planeta-Země, což by ze zobrazovací (odmocninové) škály vyšlo špatně.
+    this._solarRawPositions = positions;
     for (const key of PLANET_ORDER) {
       const p = positions[key];
       const mesh = this._solarPlanetMeshes[key];
@@ -1348,6 +1548,81 @@ class AstronomicalGlobeCard extends HTMLElement {
       const displayR = auToDisplayRadius(p.distanceAU);
       const scale = p.distanceAU > 0 ? displayR / p.distanceAU : 0;
       mesh.position.set(p.x * scale, p.z * scale, p.y * scale);
+    }
+    this._updateSolarInfoPanel();
+  }
+
+  /**
+   * Klik (ne tažení) na canvas v solar view - viz `_dragTotalMove`/
+   * `SOLAR_CLICK_MAX_MOVE_PX` v `_bindDragRotation`. Raycast proti planetám
+   * (ne proti drahám/Slunci) a přepnutí výběru (`_selectSolarPlanet`).
+   */
+  _handleSolarClick(clientX, clientY) {
+    const key = this._raycastSolarPlanetAt(clientX, clientY);
+    this._selectSolarPlanet(key);
+  }
+
+  /** Vrátí klíč planety pod danými klientskými souřadnicemi (nebo null). */
+  _raycastSolarPlanetAt(clientX, clientY) {
+    if (!this._solarPlanetMeshes || !this._solarCamera || !this._raycaster) return null;
+    const canvas = this._els.canvas;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
+    this._raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this._solarCamera);
+    const meshes = PLANET_ORDER.map((k) => this._solarPlanetMeshes[k]).filter(Boolean);
+    const hits = this._raycaster.intersectObjects(meshes, false);
+    if (!hits.length) return null;
+    const hitMesh = hits[0].object;
+    return PLANET_ORDER.find((k) => this._solarPlanetMeshes[k] === hitMesh) || null;
+  }
+
+  /**
+   * Vybere/odvybere planetu v solar view - `null` (klik do prázdna) nebo
+   * klik na už vybranou planetu (přepínač) se vrátí k přehledu celé
+   * soustavy. Samotné plynulé přiblížení kamery řeší `_frameSolar()`
+   * (`_solarFocusKey` je jediný zdroj pravdy, tahle metoda jen aktualizuje
+   * i textový info panel).
+   */
+  _selectSolarPlanet(key) {
+    const next = key && key === this._solarFocusKey ? null : key;
+    if (this._solarFocusKey === next) return;
+    this._solarFocusKey = next;
+    this._updateSolarInfoPanel();
+  }
+
+  /** Přepíše obsah/viditelnost info panelu (jméno + vzdálenosti) podle
+   * `_solarFocusKey`. Voláno z `_selectSolarPlanet()` (okamžitě po kliku)
+   * i z `_updateSolarPositions()` (1×/s, ať vzdálenosti sledují reálný
+   * pohyb planet, i když se výběr zrovna nezměnil). */
+  _updateSolarInfoPanel() {
+    const panel = this._els.solarInfo;
+    if (!panel) return;
+    const key = this._solarFocusKey;
+    if (!key) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    if (this._els.solarInfoName) this._els.solarInfoName.textContent = PLANET_LABELS_CS[key] || key;
+
+    const positions = this._solarRawPositions;
+    const p = positions && positions[key];
+    const earth = positions && positions.earth;
+
+    if (this._els.solarInfoSun) {
+      this._els.solarInfoSun.textContent = p ? `${formatAU(p.distanceAU)} od Slunce` : '';
+    }
+    if (this._els.solarInfoEarth) {
+      if (p && earth && key !== 'earth') {
+        const dx = p.x - earth.x, dy = p.y - earth.y, dz = p.z - earth.z;
+        const distAU = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        this._els.solarInfoEarth.textContent = `${formatAU(distAU)} od Země`;
+      } else {
+        this._els.solarInfoEarth.textContent = '';
+      }
     }
   }
 
@@ -1565,20 +1840,45 @@ class AstronomicalGlobeCard extends HTMLElement {
   }
 
   /** Vykreslí pohled "sluneční soustava" - pomalá dekorativní orbitální
-   * kamera kolem Slunce (viz SOLAR_CAMERA_ORBIT_SPEED), planety samotné se
-   * tady nehýbou (aktualizuje je jen _updateSolarPositions() 1×/s). */
-  _frameSolar(t) {
+   * kamera kolem Slunce (viz SOLAR_CAMERA_ORBIT_SPEED) plus ruční az/el
+   * offset z tažení (`_solarAzOffset`/`_solarElOffset`, viz
+   * `_bindDragRotation`). Planety samotné se tady nehýbou (aktualizuje je
+   * jen `_updateSolarPositions()` 1×/s).
+   *
+   * Kamera se navíc plynule (frame-rate nezávislá exponenciála, stejný
+   * princip jako u návratu glóbu domů) přibližuje na `_solarFocusPoint`/
+   * `_solarFocusDist` - ve výchozím stavu je to Slunce/`SOLAR_DISPLAY_MAX_R`,
+   * po kliknutí na planetu (`_selectSolarPlanet()`) její pozice a menší
+   * vzdálenost, takže "zaostření" vypadá jako plynulý dolet kamery, ne skok.
+   */
+  _frameSolar(t, dt) {
     if (!this._solarScene || !this._solarCamera) return;
-    const az = t * SOLAR_CAMERA_ORBIT_SPEED;
-    const dist = SOLAR_DISPLAY_MAX_R * 1.55;
+    const az = t * SOLAR_CAMERA_ORBIT_SPEED + this._solarAzOffset;
+    const el = Math.max(SOLAR_EL_MIN, Math.min(SOLAR_EL_MAX, SOLAR_CAMERA_ELEVATION + this._solarElOffset));
+
+    const focusMesh = this._solarFocusKey ? this._solarPlanetMeshes[this._solarFocusKey] : null;
+    const targetPoint = focusMesh ? focusMesh.position : SOLAR_ORIGIN;
+    const targetDist = focusMesh
+      ? Math.max(SOLAR_FOCUS_MIN_DIST, PLANET_VISUALS[this._solarFocusKey].radius * SOLAR_FOCUS_DIST_FACTOR)
+      : SOLAR_DISPLAY_MAX_R * 1.55;
+
+    // k = podíl vzdálenosti k cíli, který se "doletí" za tenhle snímek -
+    // při typickém dt (~1/60s) a SOLAR_FOCUS_TIME_CONSTANT dorazí kamera na
+    // nový cíl znatelně (~95 %) za necelou vteřinu, bez ohledu na FPS.
+    const k = 1 - Math.exp(-Math.max(0, dt) / SOLAR_FOCUS_TIME_CONSTANT);
+    this._solarFocusPoint.lerp(targetPoint, k);
+    this._solarFocusDist += (targetDist - this._solarFocusDist) * k;
+
+    const dist = this._solarFocusDist;
     const camera = this._solarCamera;
+    const fp = this._solarFocusPoint;
     camera.position.set(
-      Math.cos(az) * Math.cos(SOLAR_CAMERA_ELEVATION) * dist,
-      Math.sin(SOLAR_CAMERA_ELEVATION) * dist,
-      Math.sin(az) * Math.cos(SOLAR_CAMERA_ELEVATION) * dist
+      fp.x + Math.cos(az) * Math.cos(el) * dist,
+      fp.y + Math.sin(el) * dist,
+      fp.z + Math.sin(az) * Math.cos(el) * dist
     );
     camera.up.set(0, 1, 0);
-    camera.lookAt(0, 0, 0);
+    camera.lookAt(fp.x, fp.y, fp.z);
     this._renderer.render(this._solarScene, camera);
   }
 
@@ -1593,7 +1893,7 @@ class AstronomicalGlobeCard extends HTMLElement {
       // rozdíl od glóbusu níž) - nemá smysl ho blokovat na chybějící
       // entitě/poloze. Samotné pozice planet se přepočítávají jen 1×/s v
       // _updateUiText(), tady se jen animuje pomalá orbitální kamera.
-      this._frameSolar(t);
+      this._frameSolar(t, dt);
       return;
     }
 

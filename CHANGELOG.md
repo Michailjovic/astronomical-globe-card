@@ -4,6 +4,42 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
+## [0.10.0] - 2026-08-13
+
+### Added
+- First batch of the Solar System view roadmap:
+  - **Drag rotation** in the Solar System view. Unlike the globe's
+    quaternion trackball, this is a classic orbit camera always looking at
+    a fixed point (the Sun, or a focused planet), so there's no gimbal
+    lock/pole to work around - drag just adds a simple azimuth/elevation
+    offset on top of the existing slow auto-orbit. Elevation is clamped so
+    the camera can't fly so far above/below the ecliptic that the orbits
+    degenerate into a line.
+  - **Click a planet** to smoothly zoom the camera in on it (frame-rate
+    independent easing, not a jump) and show an info panel with its name
+    and distance from both the Sun and Earth, in AU and millions of km.
+    Distance-from-Earth is computed from the real (unscaled) heliocentric
+    coordinates, not the square-root display scale used for drawing.
+    Clicking the same planet again, clicking empty space, or the panel's
+    close button returns to the full system overview. A short tap/click
+    (under 6px of movement) is distinguished from a drag using the same
+    pointer-tracking approach already used for the globe.
+  - **Earth highlight**: a soft glow around Earth in the overview, so it's
+    immediately recognizable as "home" among the other seven planets.
+
+## [0.9.1] - 2026-08-13
+
+### Fixed
+- Solar system toggle button (new in 0.9.0) visually overlapped the date
+  text - it lived in its own top-left cluster, directly on top of where
+  `.agc-overlay-top` renders the date. Moved into the existing top-right
+  `.agc-view-controls` cluster alongside the reset/lock buttons, which had
+  free space. That container no longer hides itself as a whole based on
+  `manual_rotation`/view mode (which would have hidden the solar button
+  too) - the reset/lock buttons now show/hide individually instead. Also
+  fixed a stale cache-busting query string on the `earth-shaders.js` import
+  that had drifted out of sync with `CARD_VERSION` since a previous release.
+
 ## [0.9.0] - 2026-08-13
 
 ### Added
