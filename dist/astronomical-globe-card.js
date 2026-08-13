@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.10.0
+ * @version 0.11.0
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -225,6 +225,18 @@
  * Zbytek nápadů z brainstormingu (časová animace, konjunkce/opozice text,
  * Měsíc jako mini-model u Země, pás asteroidů, "co je dnes vidět ze Země")
  * zůstává na roadmapě pro další verze.
+ *
+ * v0.11.0 - druhá dávka roadmapy: ČASOVÁ ANIMACE v solar view
+ * (`.agc-solar-time` lišta dole, viz `_bindSolarTimeControls`). Tlačítko
+ * přehrát/pauza + tlačítko rychlosti (cykluje 1 den/týden/měsíc/rok za
+ * sekundu, vždy dopředu) + tlačítko "Dnes" pro návrat na živé sledování.
+ * `_solarSimTime`/`_solarTimeSpeed` jsou jediný zdroj pravdy: dokud je
+ * animace vypnutá, chová se karta přesně jako předtím (živé "teď",
+ * aktualizace 1×/s); jakmile běží, `_frameSolar()` přebírá přepočet pozic
+ * KAŽDÝ SNÍMEK (ne ten 1×/s interval), jinak by animace při vyšších
+ * rychlostech škubala. Pokud je zrovna vybraná planeta (viz v0.10.0),
+ * zaostření kamery ji přirozeně sleduje i během pohybu - žádný extra kód,
+ * `focusMesh.position` se prostě mění pod rukama.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -232,9 +244,9 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.10.0';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.10.0';
-import { getPlanetPositions, PLANET_ORDER, PLANET_MEAN_DISTANCE_AU } from './lib/planets.js?v=0.10.0';
+import * as THREE from './lib/three.module.min.js?v=0.11.0';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.11.0';
+import { getPlanetPositions, PLANET_ORDER, PLANET_MEAN_DISTANCE_AU } from './lib/planets.js?v=0.11.0';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -244,9 +256,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.10.0';
+} from './lib/earth-shaders.js?v=0.11.0';
 
-const CARD_VERSION = '0.10.0';
+const CARD_VERSION = '0.11.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -361,6 +373,14 @@ const SOLAR_FOCUS_MIN_DIST = 0.45;
 // Sdílený referenční bod "beze změny" (Slunce, počátek scény) pro
 // _solarFocusPoint, když není vybraná žádná planeta - nikdy se nemutuje.
 const SOLAR_ORIGIN = new THREE.Vector3(0, 0, 0);
+
+// Časová animace v solar view (v0.11.0) - tlačítko "přehrát" cykluje mezi
+// těmito přednastavenými rychlostmi (dny simulovaného času za 1 skutečnou
+// sekundu), vždy dopředu v čase. Dost širokí rozsah, aby šlo sledovat jak
+// rychlý oběh Merkuru (88 dní), tak pomalý Neptun (165 let) v rozumném čase.
+const SOLAR_TIME_SPEED_PRESETS_DAYS_PER_SEC = [1, 7, 30, 365];
+const SOLAR_TIME_SPEED_LABELS = { 1: '1 den/s', 7: '1 týd/s', 30: '1 měs/s', 365: '1 rok/s' };
+const MS_PER_DAY = 86400000;
 
 const DEFAULT_CONFIG = {
   type: 'custom:astronomical-globe-card',
@@ -701,6 +721,20 @@ class AstronomicalGlobeCard extends HTMLElement {
               <div class="agc-solar-info-row agc-solar-info-sun"></div>
               <div class="agc-solar-info-row agc-solar-info-earth"></div>
             </div>
+            <div class="agc-solar-time" style="display:none">
+              <button type="button" class="agc-btn agc-solar-time-play" title="Přehrát časovou animaci" aria-label="Přehrát časovou animaci" aria-pressed="false">
+                <svg class="agc-icon-time-play" viewBox="0 0 24 24" width="14" height="14">
+                  <path d="M6 4 L20 12 L6 20 Z" fill="currentColor"/>
+                </svg>
+                <svg class="agc-icon-time-pause" viewBox="0 0 24 24" width="14" height="14" hidden>
+                  <rect x="5" y="4" width="5" height="16" fill="currentColor"/>
+                  <rect x="14" y="4" width="5" height="16" fill="currentColor"/>
+                </svg>
+              </button>
+              <button type="button" class="agc-solar-time-speed" title="Rychlost časové animace (klikni pro změnu)"></button>
+              <div class="agc-solar-time-label"></div>
+              <button type="button" class="agc-solar-time-today" title="Zpět na dnešek" style="display:none">Dnes</button>
+            </div>
             <div class="agc-error" hidden></div>
           </div>
         </div>
@@ -734,12 +768,20 @@ class AstronomicalGlobeCard extends HTMLElement {
       solarInfoName: this.shadowRoot.querySelector('.agc-solar-info-name'),
       solarInfoSun: this.shadowRoot.querySelector('.agc-solar-info-sun'),
       solarInfoEarth: this.shadowRoot.querySelector('.agc-solar-info-earth'),
+      solarTimeBar: this.shadowRoot.querySelector('.agc-solar-time'),
+      solarTimePlay: this.shadowRoot.querySelector('.agc-solar-time-play'),
+      solarTimeIconPlay: this.shadowRoot.querySelector('.agc-icon-time-play'),
+      solarTimeIconPause: this.shadowRoot.querySelector('.agc-icon-time-pause'),
+      solarTimeSpeed: this.shadowRoot.querySelector('.agc-solar-time-speed'),
+      solarTimeLabel: this.shadowRoot.querySelector('.agc-solar-time-label'),
+      solarTimeToday: this.shadowRoot.querySelector('.agc-solar-time-today'),
     };
 
     this._clock = new THREE.Clock();
     this._wobbleSeed = Math.random() * 1000;
     this._bindDragRotation();
     this._bindViewControls();
+    this._bindSolarTimeControls();
     if (this._els.solarInfoClose) {
       // Křížek v info panelu = stejná akce jako klik na už vybranou planetu
       // (odvybrat) - viz _selectSolarPlanet().
@@ -1016,6 +1058,112 @@ class AstronomicalGlobeCard extends HTMLElement {
   }
 
   /**
+   * Časová animace v solar view (v0.11.0) - `.agc-solar-time` lišta dole.
+   * `_solarSimTime` (Date | null) a `_solarTimeSpeed` (dny simulovaného
+   * času za skutečnou sekundu, 0 = pauza) jsou jediný zdroj pravdy:
+   * `null`/`0` = normální živé sledování reálného "teď" (beze změny oproti
+   * v0.9.0, aktualizuje se 1×/s v `_updateUiText`); jakmile se nastaví
+   * nenulová rychlost, `_frameSolar()` (ne `_updateUiText`) přebírá
+   * aktualizaci pozic KAŽDÝ SNÍMEK, ať animace neškube.
+   */
+  _bindSolarTimeControls() {
+    const playBtn = this._els.solarTimePlay;
+    const speedBtn = this._els.solarTimeSpeed;
+    const todayBtn = this._els.solarTimeToday;
+    if (!playBtn || !speedBtn || !todayBtn) return;
+
+    this._solarSimTime = null;
+    this._solarTimeSpeed = 0;
+    this._solarTimeSpeedPresetIdx = 0;
+
+    const onPlayToggle = (ev) => {
+      ev.preventDefault();
+      if (this._solarTimeSpeed !== 0) {
+        this._setSolarTimeSpeed(0);
+      } else {
+        this._setSolarTimeSpeed(SOLAR_TIME_SPEED_PRESETS_DAYS_PER_SEC[this._solarTimeSpeedPresetIdx]);
+      }
+    };
+    const onSpeedCycle = (ev) => {
+      ev.preventDefault();
+      this._solarTimeSpeedPresetIdx =
+        (this._solarTimeSpeedPresetIdx + 1) % SOLAR_TIME_SPEED_PRESETS_DAYS_PER_SEC.length;
+      // Změna rychlosti vždy rovnou (znovu)spustí přehrávání - úprava
+      // rychlosti, když je stejně na pauze, by nedávala smysl/nic by se
+      // neukázalo.
+      this._setSolarTimeSpeed(SOLAR_TIME_SPEED_PRESETS_DAYS_PER_SEC[this._solarTimeSpeedPresetIdx]);
+    };
+    const onToday = (ev) => {
+      ev.preventDefault();
+      this._resetSolarTime();
+      this._updateSolarPositions(new Date());
+    };
+
+    playBtn.addEventListener('click', onPlayToggle);
+    speedBtn.addEventListener('click', onSpeedCycle);
+    todayBtn.addEventListener('click', onToday);
+
+    this._solarTimeControlsUnbind = () => {
+      playBtn.removeEventListener('click', onPlayToggle);
+      speedBtn.removeEventListener('click', onSpeedCycle);
+      todayBtn.removeEventListener('click', onToday);
+    };
+
+    this._updateSolarTimeUi();
+  }
+
+  /** Nastaví rychlost časové animace; při startu z pauzy (0 → nenulová)
+   * začíná simulovaný čas vždy OD DNEŠKA, ne odkud skončila minulá relace. */
+  _setSolarTimeSpeed(daysPerSec) {
+    this._solarTimeSpeed = daysPerSec;
+    if (daysPerSec !== 0 && !this._solarSimTime) {
+      this._solarSimTime = new Date();
+    }
+    this._updateSolarTimeUi();
+  }
+
+  /** Vrátí časovou animaci do výchozího stavu (živé sledování reálného
+   * "teď") - voláno tlačítkem "Dnes" i při odchodu z solar view. */
+  _resetSolarTime() {
+    this._solarSimTime = null;
+    this._solarTimeSpeed = 0;
+    this._solarTimeSpeedPresetIdx = 0;
+    this._updateSolarTimeUi();
+  }
+
+  /** Přepíše ikonu play/pauza, text rychlosti, viditelnost tlačítka "Dnes"
+   * a datumový popisek podle aktuálního stavu `_solarSimTime`/`_solarTimeSpeed`. */
+  _updateSolarTimeUi() {
+    const playBtn = this._els.solarTimePlay;
+    if (!playBtn) return;
+
+    const playing = this._solarTimeSpeed !== 0;
+    playBtn.setAttribute('aria-pressed', String(playing));
+    playBtn.title = playing ? 'Pozastavit časovou animaci' : 'Přehrát časovou animaci';
+    if (this._els.solarTimeIconPlay) this._els.solarTimeIconPlay.hidden = playing;
+    if (this._els.solarTimeIconPause) this._els.solarTimeIconPause.hidden = !playing;
+
+    const presetDays = SOLAR_TIME_SPEED_PRESETS_DAYS_PER_SEC[this._solarTimeSpeedPresetIdx];
+    if (this._els.solarTimeSpeed) {
+      this._els.solarTimeSpeed.textContent = SOLAR_TIME_SPEED_LABELS[presetDays] || `${presetDays} d/s`;
+    }
+
+    const diverged = !!this._solarSimTime;
+    if (this._els.solarTimeToday) this._els.solarTimeToday.style.display = diverged ? '' : 'none';
+
+    if (this._els.solarTimeLabel) {
+      const newText = diverged
+        ? this._solarSimTime.toLocaleDateString('cs-CZ', { day: 'numeric', month: 'short', year: 'numeric' })
+        : '';
+      // Zbytečné přepisování stejného textu 60×/s (voláno i z _frameSolar()
+      // během animace) je jen plýtvání - přeskočit, když se nic nezměnilo.
+      if (this._els.solarTimeLabel.textContent !== newText) {
+        this._els.solarTimeLabel.textContent = newText;
+      }
+    }
+  }
+
+  /**
    * Přepne mezi pohledem "glóbus" (`'globe'`, výchozí) a "sluneční soustava"
    * (`'solar'`) - viz tlačítko vlevo nahoře. Obě scény sdílí stejný
    * renderer/canvas (viz `_initSolarScene`), takže přepnutí je jen změna
@@ -1045,14 +1193,17 @@ class AstronomicalGlobeCard extends HTMLElement {
     if (this._els.overlayBottom) this._els.overlayBottom.style.display = isSolar ? 'none' : '';
     if (this._els.cornerBl) this._els.cornerBl.style.display = isSolar ? 'none' : '';
     if (this._els.cornerBr) this._els.cornerBr.style.display = isSolar ? 'none' : '';
+    if (this._els.solarTimeBar) this._els.solarTimeBar.style.display = isSolar ? '' : 'none';
 
     if (isSolar) {
       this._updateSolarPositions(new Date());
     } else {
-      // Odchod z pohledu sluneční soustavy zruší výběr planety (v0.11.0) -
-      // ať se při příštím otevření startuje vždy z přehledu celé soustavy,
-      // ne "napůl přiblíženo" na to, co bylo vybrané minule.
+      // Odchod z pohledu sluneční soustavy zruší výběr planety i časovou
+      // animaci (v0.11.0) - ať se při příštím otevření startuje vždy z
+      // živého přehledu celé soustavy, ne "napůl přiblíženo"/přetočeno na
+      // to, co bylo nastavené minule.
       this._selectSolarPlanet(null);
+      this._resetSolarTime();
     }
   }
 
@@ -1160,7 +1311,10 @@ class AstronomicalGlobeCard extends HTMLElement {
          nezabere - viz dlouhá poznámka u .agc-error[hidden] níž (stejný
          bug, jednou už tady nahlášený jako "tmavé sklo přes celou kartu"). */
       .agc-solar-info {
-        position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%);
+        /* bottom: 54px (ne 20px) - nechává místo pro .agc-solar-time lištu
+           pod ním (v0.11.0), ať se dvě dolní překryvné vrstvy nesrazí,
+           stejný typ chyby, jaký jsme opravovali u solar tlačítka/data. */
+        position: absolute; left: 50%; bottom: 54px; transform: translateX(-50%);
         z-index: 3; max-width: 78%; padding: 10px 32px 10px 14px;
         background: rgba(0,0,0,0.55); border-radius: 10px;
         color: #fff; text-align: left; pointer-events: auto;
@@ -1179,6 +1333,32 @@ class AstronomicalGlobeCard extends HTMLElement {
         opacity: 0.6; cursor: pointer; font-size: 13px; line-height: 1; padding: 0;
       }
       .agc-solar-info-close:hover { opacity: 1; background: rgba(255,255,255,0.12); }
+
+      /* Časová animace (v0.11.0) - lišta úplně dole, vždy vidět v solar
+         view (viditelnost řeší inline style.display v setViewMode(), jako
+         .agc-overlay-bottom - žádný [hidden] atribut, takže tu není
+         potřeba speciální CSS specificita jako u .agc-error/.agc-solar-info. */
+      .agc-solar-time {
+        position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%);
+        z-index: 3; display: flex; align-items: center; gap: 8px;
+        padding: 4px 10px; border-radius: 20px; background: rgba(0,0,0,0.5);
+        pointer-events: auto;
+      }
+      .agc-solar-time-play {
+        width: 24px; height: 24px;
+      }
+      .agc-solar-time-speed, .agc-solar-time-today {
+        border: none; background: rgba(255,255,255,0.14); color: #fff;
+        font-size: 11px; font-weight: 600; padding: 4px 9px; border-radius: 12px;
+        cursor: pointer; opacity: 0.9; transition: opacity 0.15s ease, background-color 0.15s ease;
+      }
+      .agc-solar-time-speed:hover, .agc-solar-time-today:hover {
+        opacity: 1; background: rgba(255,255,255,0.26);
+      }
+      .agc-solar-time-label {
+        font-size: 11px; color: #cfe3ff; min-width: 64px; text-align: center;
+        font-variant-numeric: tabular-nums;
+      }
 
       .agc-error {
         position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -1853,6 +2033,20 @@ class AstronomicalGlobeCard extends HTMLElement {
    */
   _frameSolar(t, dt) {
     if (!this._solarScene || !this._solarCamera) return;
+
+    if (this._solarTimeSpeed !== 0) {
+      // Časová animace (v0.11.0): posune simulovaný čas o (rychlost × dt) a
+      // PŘEPOČÍTÁ POZICE KAŽDÝ SNÍMEK - na rozdíl od běžného živého
+      // sledování (1×/s v _updateUiText) by se jinak animace při vyšších
+      // rychlostech (měsíc/rok za sekundu) trhala. Pokud je zrovna vybraná
+      // planeta (_solarFocusKey), zaostření kamery níž ji přirozeně
+      // sleduje i během pohybu - žádný extra kód navíc, `focusMesh.position`
+      // se prostě mění pod rukama.
+      this._solarSimTime = new Date(this._solarSimTime.getTime() + this._solarTimeSpeed * dt * MS_PER_DAY);
+      this._updateSolarPositions(this._solarSimTime);
+      this._updateSolarTimeUi();
+    }
+
     const az = t * SOLAR_CAMERA_ORBIT_SPEED + this._solarAzOffset;
     const el = Math.max(SOLAR_EL_MIN, Math.min(SOLAR_EL_MAX, SOLAR_CAMERA_ELEVATION + this._solarElOffset));
 
@@ -2000,7 +2194,14 @@ class AstronomicalGlobeCard extends HTMLElement {
     const now = new Date();
 
     if (this._viewMode === 'solar') {
-      this._updateSolarPositions(now);
+      // Živé sledování reálného "teď" jen mimo časovou animaci (v0.11.0) -
+      // jakmile běží (nebo je pauznutá na simulovaném čase), pozice
+      // aktualizuje KAŽDÝ SNÍMEK `_frameSolar()`, ne tenhle 1×/s interval,
+      // jinak by si tenhle kód s animací "přetahoval" pozice zpátky na
+      // aktuální datum uprostřed přehrávání.
+      if (this._solarTimeSpeed === 0 && !this._solarSimTime) {
+        this._updateSolarPositions(now);
+      }
     }
 
     const hass = this._hass;

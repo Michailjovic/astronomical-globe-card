@@ -4,6 +4,22 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
+## [0.11.0] - 2026-08-13
+
+### Added
+- Second batch of the Solar System view roadmap: **time animation**. A
+  compact control bar at the bottom of the Solar System view lets you
+  play/pause and cycle through speed presets (1 day/week/month/year of
+  simulated time per real second, always forward), plus a "Today" button
+  to jump back to live tracking. While paused (the default), the view
+  behaves exactly as before - live real-world positions, refreshed once a
+  second. Once animation is running, planet positions are recomputed every
+  rendered frame instead, so movement at higher speeds doesn't stutter. If
+  a planet is currently focused (v0.10.0's click-to-zoom), the camera
+  keeps following it smoothly as it orbits during the animation, with no
+  extra code needed - the focus point just tracks the planet's live
+  position.
+
 ## [0.10.0] - 2026-08-13
 
 ### Added
