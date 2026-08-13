@@ -4,6 +4,42 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
+## [0.15.0] - 2026-08-13
+
+### Added
+- Sixth and final batch of the original brainstorm roadmap: **asteroid
+  belt + Pluto**. The belt is a purely decorative static `THREE.Points`
+  cloud between the orbits of Mars and Jupiter - not a simulation of
+  individual bodies, which would be pointless at this visual scale. Pluto
+  is added as a 9th body with its own Keplerian orbital elements, kept
+  deliberately outside `PLANET_ORDER` (it's a dwarf planet since the 2006
+  IAU reclassification, not one of the 8 "major" planets), but otherwise
+  behaves exactly like the others - clickable, zoomable, shows up in the
+  conjunction/opposition info panel - because all the relevant code
+  already keys off the planet name generically rather than hardcoding
+  `PLANET_ORDER`. Pluto's orbital elements were verified via web search
+  (JPL's public Standish table used to include Pluto before NASA removed
+  it after the IAU reclassification) plus cross-checking against an
+  independently-derived table (agreement to 3-4 significant figures) and
+  Kepler's second and third laws - the same confidence bar as the other 8
+  planets.
+
+## [0.14.0] - 2026-08-13
+
+### Added
+- Fifth batch of the Solar System view roadmap: **the Moon as a mini-model
+  next to Earth**. The Moon's real orbital distance would be sub-pixel at
+  this diagram's scale, so its distance from Earth is stylized - but its
+  direction is real: the Moon's current phase (already computed elsewhere
+  in the card for the phase icon) is, by definition, the angle between the
+  Moon and the Sun as seen from Earth, so that same number places the Moon
+  correctly around Earth with no new astronomy needed. It's parented to
+  the Earth mesh, so it automatically travels along with Earth's orbit.
+  As a nice side effect, the Moon needs no special phase shader or
+  texture at all - it uses the same lit-sphere material as the planets,
+  under the same Sun light, so a correctly-shaped crescent or gibbous
+  shape just falls out of the 3D lighting once the geometry is right.
+
 ## [0.13.0] - 2026-08-13
 
 ### Added

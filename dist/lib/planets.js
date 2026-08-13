@@ -117,6 +117,26 @@ const ELEMENTS = {
     peri: 44.96476227, peri_d: -0.32241464,
     node: 131.78422574, node_d: -0.00508664,
   },
+  // Pluto (trpasličí planeta, ne v PLANET_ORDER - viz getPlutoPosition()
+  // níž). Standishova tabulka (viz hlavička souboru) Pluto kdysi
+  // obsahovala, než ho NASA/JPL v souladu s přeřazením IAU 2006 z veřejně
+  // publikované verze odstranilo (ssd.jpl.nasa.gov/planets/approx_pos.html:
+  // "The former planet Pluto has also been removed"). Epochové (T=0)
+  // hodnoty tu ověřeny křížovou kontrolou proti nezávislé DE200-fit
+  // tabulce (met.reading.ac.uk/~ross/Astronomy/Planets.html, jiná metoda
+  // fitu) - shoda na 3-4 platné číslice ve všech šesti elementech, a u
+  // L_d (fyzikálně nejrobustnější veličina - v podstatě střední pohyb,
+  // 360°/oběžná doba) shoda na 6 platných číslic po převodu jednotek
+  // (obloukové vteřiny/století -> stupně/století). Přesnost stejného řádu
+  // jako u ostatních 8 planet výš - naprosto dostatečné pro vizualizaci.
+  pluto: {
+    a: 39.48211675, a_d: -0.00031596,
+    e: 0.24882730, e_d: 0.00005170,
+    I: 17.14001206, I_d: 0.00004818,
+    L: 238.92903833, L_d: 145.20780515,
+    peri: 224.06891629, peri_d: -0.04062942,
+    node: 110.30393684, node_d: -0.01183482,
+  },
 };
 
 export const PLANET_ORDER = [
@@ -212,6 +232,23 @@ export function getPlanetPositions(date) {
     result[key] = planetHeliocentric(key, T);
   }
   return result;
+}
+
+/** Střední vzdálenost Pluta od Slunce (AU, epochová J2000 hodnota) - pro
+ * kreslení jeho statické oběžné dráhy, stejný princip jako
+ * `PLANET_MEAN_DISTANCE_AU` u ostatních planet (v0.15.0). */
+export const PLUTO_MEAN_DISTANCE_AU = ELEMENTS.pluto.a;
+
+/**
+ * Heliocentrická ekliptikální poloha Pluta (J2000) pro dané Date - stejný
+ * tvar návratové hodnoty jako jednotlivé záznamy z `getPlanetPositions()`
+ * (`{x,y,z,distanceAU,eclipticLongitude}`), jen samostatně (Pluto NENÍ v
+ * `PLANET_ORDER` - je to trpasličí planeta, ne jedna z 8 "hlavních", viz
+ * poznámka u `ELEMENTS.pluto` výš).
+ */
+export function getPlutoPosition(date) {
+  const T = julianCenturies(toJulian(date));
+  return planetHeliocentric('pluto', T);
 }
 
 /** Planety rozeznatelné pouhým okem - Uran je za ideálních podmínek na

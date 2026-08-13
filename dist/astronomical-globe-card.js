@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.13.0
+ * @version 0.15.0
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -265,6 +265,40 @@
  * vidět ve scéně. Matematika ověřena samostatně: v "podplanetárním bodě"
  * (lat=deklinace, lon odvozeno z RA a hvězdného času) vychází výška ~90° s
  * přesností na setiny stupně, stejně přesně -90° v antipodu.
+ *
+ * v0.14.0 - pátá dávka roadmapy: MĚSÍC jako mini-model u Země
+ * (`_solarMoonMesh`, viz `_initSolarScene`/`_updateSolarMoonPosition`).
+ * Skutečná vzdálenost Měsíce (0.00257 AU) by na tomhle měřítku byla pod
+ * rozlišením pixelu, takže stylizovaná vzdálenost (`MOON_ORBIT_VISUAL_RADIUS`),
+ * ale SMĚR je skutečný: `moon.phase` z astro.js je už definovaná jako úhel
+ * (ekliptikální délka Měsíce mínus Slunce)/360°, takže `phase × 2π` je
+ * přesně úhel Měsíce vůči směru Země→Slunce - žádná nová astronomie navíc,
+ * jen reuse hodnoty počítané už pro ikonku fáze jinde v kartě. Měsíc je
+ * PŘIDANÝ JAKO DÍTĚ zemské mesh, takže s ní automaticky letí (three.js
+ * skládá world pozici = pozice rodiče + lokální pozice dítěte). Bonus:
+ * fáze Měsíce se ukáže sama, bez jakéhokoli fázového shaderu/textury -
+ * Měsíc má stejný `MeshStandardMaterial` a je nasvícený stejným Sluncem
+ * (`PointLight`) jako planety, takže "srpek/couvající srpek" vyleze čistě
+ * jako vedlejší efekt správně natočeného 3D nasvícení ve správném směru.
+ *
+ * v0.15.0 - šestá a poslední dávka roadmapy z brainstormingu: PÁS
+ * ASTEROIDŮ + PLUTO. Pás asteroidů je čistě dekorativní statický
+ * `THREE.Points` oblak (`ASTEROID_BELT_*` konstanty) mezi drahou Marsu a
+ * Jupiteru - NE simulace tisíců jednotlivých těles na vlastních drahách
+ * (zbytečné pro tuhle vizualizaci, vizuálně nerozeznatelné od statického
+ * mraku). Pluto přidán jako 9. těleso se svými vlastními Keplerovými
+ * elementy (`ELEMENTS.pluto` v `lib/planets.js`) - záměrně MIMO
+ * `PLANET_ORDER` (trpasličí planeta od IAU 2006, ne jedna z 8 "hlavních"),
+ * ale jinak se chová úplně stejně jako ostatní planety (klikatelný,
+ * zaostřitelný, má konjunkci/opozici v info panelu) díky tomu, že veškerý
+ * kód od `_updateSolarPositions()` po `_updateSolarInfoPanel()` bere klíč
+ * planety obecně (`Object.keys(this._solarPlanetMeshes)`), ne natvrdo
+ * `PLANET_ORDER`. Pluto elementy ověřeny web-searchem (JPL/Standish
+ * tabulka Pluto historicky obsahovala, NASA ji z veřejné stránky po
+ * přeřazení IAU odstranila) + křížovou kontrolou proti nezávislé DE200-fit
+ * tabulce (shoda na 3-4 platné číslice) + Keplerovým 2. a 3. zákonem
+ * (viz `lib/planets.js` a testy) - stejná úroveň důvěry jako u ostatních
+ * 8 planet.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -272,15 +306,17 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.13.0';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.13.0';
+import * as THREE from './lib/three.module.min.js?v=0.15.0';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.15.0';
 import {
   getPlanetPositions,
   PLANET_ORDER,
   PLANET_MEAN_DISTANCE_AU,
   getPlanetHorizontalPositions,
   NAKED_EYE_PLANETS,
-} from './lib/planets.js?v=0.13.0';
+  getPlutoPosition,
+  PLUTO_MEAN_DISTANCE_AU,
+} from './lib/planets.js?v=0.15.0';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -290,9 +326,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.13.0';
+} from './lib/earth-shaders.js?v=0.15.0';
 
-const CARD_VERSION = '0.13.0';
+const CARD_VERSION = '0.15.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -373,7 +409,31 @@ const PLANET_VISUALS = {
 const PLANET_LABELS_CS = {
   mercury: 'Merkur', venus: 'Venuše', earth: 'Země', mars: 'Mars',
   jupiter: 'Jupiter', saturn: 'Saturn', uranus: 'Uran', neptune: 'Neptun',
+  pluto: 'Pluto',
 };
+// Pluto (v0.15.0) - stylizovaná barva/velikost jako u PLANET_VISUALS výš,
+// menší než všechny opravdové planety (trpasličí planeta, ~1/6 průměru
+// Země ve skutečnosti - tady jen "nejmenší tečka v sadě", ne přesný poměr).
+const PLUTO_VISUAL = { color: 0xcbb89d, radius: 0.022 };
+// Pás asteroidů (v0.15.0) - čistě dekorativní statický oblak bodů mezi
+// drahou Marsu a Jupiteru, NE simulace jednotlivých těles na vlastních
+// drahách (to by u tisíců bodů bylo zbytečně nákladné a vizuálně
+// nerozeznatelné od statického oblaku). Skutečný pás má vertikální
+// "tloušťku" jen zlomek AU, ale na tomhle měřítku by byl neviditelně
+// tenký - `ASTEROID_BELT_HEIGHT` je stylizovaně zvětšená, ať je z pásu
+// vidět, že je to mrak, ne dokonalý plochý kruh.
+const ASTEROID_BELT_COUNT = 900;
+const ASTEROID_BELT_HEIGHT = 0.12;
+const ASTEROID_BELT_COLOR = 0x9a9a92;
+// Měsíc jako mini-model u Země (v0.14.0) - skutečná vzdálenost Měsíce
+// (0.00257 AU) by na tomhle měřítku (Merkur už na 1.0) byla pod rozlišením
+// jednoho pixelu, takže stylizovaná (ne astronomicky přesná) vzdálenost od
+// středu Země - dost velká, aby vyčnívala za zvýrazňovací halo Země
+// (`visual.radius * 5` = 0.275, viz `_initSolarScene`), dost malá, aby
+// bylo jasné, že patří k Zemi, ne že je to samostatná planeta.
+const MOON_VISUAL_RADIUS = 0.018;
+const MOON_ORBIT_VISUAL_RADIUS = 0.32;
+const MOON_VISUAL_COLOR = 0xbfbfbf;
 // Pomalá plynulá rotace kamery kolem Slunce v tomto pohledu (rad/s) - čistě
 // dekorativní "živý" pocit, ne interaktivní ovládání (na rozdíl od glóbusu
 // tenhle pohled zatím nejde ručně otáčet, viz poznámka u v0.9.0).
@@ -1797,6 +1857,42 @@ class AstronomicalGlobeCard extends HTMLElement {
         }));
         earthHighlight.scale.set(visual.radius * 5, visual.radius * 5, 1);
         planetMesh.add(earthHighlight);
+
+        // Měsíc jako mini-model (v0.14.0) - PŘIDANÝ JAKO DÍTĚ zemské
+        // mesh, takže při pohybu Země (viz `_updateSolarPositions`) letí
+        // automaticky s ní (three.js skládá world pozici = pozice rodiče +
+        // lokální pozice dítěte); jeho LOKÁLNÍ pozici (směr a vzdálenost od
+        // Země) přepočítává `_updateSolarMoonPosition()` podle skutečné
+        // aktuální fáze. Tenký prstenec dráhy pro čitelnost, stejný princip
+        // jako oběžné dráhy planet výš, jen v měřítku Země.
+        const moonOrbitSegments = 48;
+        const moonOrbitPositions = new Float32Array((moonOrbitSegments + 1) * 3);
+        for (let i = 0; i <= moonOrbitSegments; i++) {
+          const a = (i / moonOrbitSegments) * Math.PI * 2;
+          moonOrbitPositions[i * 3] = MOON_ORBIT_VISUAL_RADIUS * Math.cos(a);
+          moonOrbitPositions[i * 3 + 1] = 0;
+          moonOrbitPositions[i * 3 + 2] = MOON_ORBIT_VISUAL_RADIUS * Math.sin(a);
+        }
+        const moonOrbitGeometry = new THREE.BufferGeometry();
+        moonOrbitGeometry.setAttribute('position', new THREE.Float32BufferAttribute(moonOrbitPositions, 3));
+        const moonOrbitMaterial = new THREE.LineBasicMaterial({
+          color: 0xaaaaaa,
+          transparent: true,
+          opacity: 0.35,
+        });
+        planetMesh.add(new THREE.LineLoop(moonOrbitGeometry, moonOrbitMaterial));
+
+        const moonMesh = new THREE.Mesh(
+          new THREE.SphereGeometry(MOON_VISUAL_RADIUS, 16, 16),
+          new THREE.MeshStandardMaterial({ color: MOON_VISUAL_COLOR, roughness: 0.95, metalness: 0 })
+        );
+        // Stejné nasvícení Sluncem (PointLight v počátku scény, viz výš)
+        // jako u planet - žádný speciální "fázový" shader/textura navíc,
+        // fáze Měsíce se ukáže úplně sama jako přirozený vedlejší efekt
+        // správně natočeného 3D nasvícení, přesně jako u ostatních planet.
+        moonMesh.position.set(MOON_ORBIT_VISUAL_RADIUS, 0, 0); // dočasně - _updateSolarMoonPosition() ji hned přepíše
+        planetMesh.add(moonMesh);
+        this._solarMoonMesh = moonMesh;
       }
 
       if (visual.ring) {
@@ -1814,6 +1910,77 @@ class AstronomicalGlobeCard extends HTMLElement {
         planetMesh.add(ringMesh);
       }
     }
+
+    // Pás asteroidů (v0.15.0, viz konstanty ASTEROID_BELT_* výš) - statický
+    // dekorativní oblak bodů mezi drahou Marsu a Jupiteru. `THREE.Points`
+    // (ne stovky jednotlivých Mesh) - jedna geometrie/draw-call pro
+    // stovky bodů, prakticky zadarmo na výkon narozdíl od tolika
+    // samostatných koulí.
+    {
+      const innerR = auToDisplayRadius(PLANET_MEAN_DISTANCE_AU.mars);
+      const outerR = auToDisplayRadius(PLANET_MEAN_DISTANCE_AU.jupiter);
+      const beltPositions = new Float32Array(ASTEROID_BELT_COUNT * 3);
+      for (let i = 0; i < ASTEROID_BELT_COUNT; i++) {
+        const a = Math.random() * Math.PI * 2;
+        // sqrt(random) - rovnoměrné rozložení podle PLOCHY mezikruží, ne
+        // podle poloměru (jinak by se body nepřirozeně hromadily u
+        // vnitřního okraje).
+        const r = innerR + (outerR - innerR) * Math.sqrt(Math.random());
+        const y = (Math.random() - 0.5) * ASTEROID_BELT_HEIGHT;
+        beltPositions[i * 3] = r * Math.cos(a);
+        beltPositions[i * 3 + 1] = y;
+        beltPositions[i * 3 + 2] = r * Math.sin(a);
+      }
+      const beltGeometry = new THREE.BufferGeometry();
+      beltGeometry.setAttribute('position', new THREE.Float32BufferAttribute(beltPositions, 3));
+      const beltMaterial = new THREE.PointsMaterial({
+        color: ASTEROID_BELT_COLOR,
+        size: 0.012,
+        transparent: true,
+        opacity: 0.7,
+        sizeAttenuation: true,
+      });
+      scene.add(new THREE.Points(beltGeometry, beltMaterial));
+    }
+
+    // Pluto (v0.15.0, trpasličí planeta - NENÍ v PLANET_ORDER, viz
+    // `getPlutoPosition()`/poznámka v planets.js) - vlastní kus kódu mimo
+    // smyčku výš, protože do ní záměrně nepatří.
+    {
+      const r = auToDisplayRadius(PLUTO_MEAN_DISTANCE_AU);
+      this._solarOrbitRadii.pluto = r;
+
+      const segments = 96;
+      const plutoOrbitPositions = new Float32Array((segments + 1) * 3);
+      for (let i = 0; i <= segments; i++) {
+        const a = (i / segments) * Math.PI * 2;
+        plutoOrbitPositions[i * 3] = r * Math.cos(a);
+        plutoOrbitPositions[i * 3 + 1] = 0;
+        plutoOrbitPositions[i * 3 + 2] = r * Math.sin(a);
+      }
+      const plutoOrbitGeometry = new THREE.BufferGeometry();
+      plutoOrbitGeometry.setAttribute('position', new THREE.Float32BufferAttribute(plutoOrbitPositions, 3));
+      const plutoOrbitMaterial = new THREE.LineBasicMaterial({
+        color: 0x8fb8ff,
+        transparent: true,
+        opacity: 0.18,
+      });
+      // POZOR: tahle plochá kružnice (v rovině ekliptiky) je u Pluta
+      // hrubší aproximace než u ostatních 8 planet - jeho skutečná dráha
+      // je skloněná ~17° k ekliptice (mnohem víc než kterákoli z
+      // ostatních). Samotná planeta (počítaná přes plný Keplerův řešič
+      // VČETNĚ sklonu, viz `_updateSolarPositions`) proto bude na scéně
+      // reálně dost mimo tuhle kruhovou čáru - to je OČEKÁVANÉ, ne bug.
+      scene.add(new THREE.LineLoop(plutoOrbitGeometry, plutoOrbitMaterial));
+
+      const plutoMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(PLUTO_VISUAL.radius, 16, 16),
+        new THREE.MeshStandardMaterial({ color: PLUTO_VISUAL.color, roughness: 0.9, metalness: 0 })
+      );
+      plutoMesh.position.set(r, 0, 0); // dočasně - _updateSolarPositions() ji hned přepíše
+      scene.add(plutoMesh);
+      this._solarPlanetMeshes.pluto = plutoMesh;
+    }
   }
 
   /**
@@ -1826,6 +1993,12 @@ class AstronomicalGlobeCard extends HTMLElement {
   _updateSolarPositions(now) {
     if (!this._solarPlanetMeshes) return;
     const positions = getPlanetPositions(now);
+    // Pluto (v0.15.0) není v PLANET_ORDER/getPlanetPositions() (trpasličí
+    // planeta, ne jedna z 8 "hlavních"), ale má stejný tvar dat
+    // ({x,y,z,distanceAU,...}) - přimíchaný sem se s ním dál zachází úplně
+    // stejně jako s ostatními (scale/info panel/elongace/raycast fungují
+    // beze změny, protože všude berou klíč obecně, ne natvrdo PLANET_ORDER).
+    positions.pluto = getPlutoPosition(now);
     // Uloženo stranou (surové AU souřadnice, ne scale-nutá pozice v scéně) -
     // info panel (`_updateSolarInfoPanel`) z toho počítá SKUTEČNOU vzdálenost
     // planeta-Země, což by ze zobrazovací (odmocninové) škály vyšlo špatně.
@@ -1835,7 +2008,7 @@ class AstronomicalGlobeCard extends HTMLElement {
     // (v0.13.0) musí počítat výšku nad obzorem pro STEJNÝ okamžik, ne
     // znovu volat `new Date()` a rozjet se s tím, co se zrovna kreslí.
     this._solarPositionsDate = now;
-    for (const key of PLANET_ORDER) {
+    for (const key of Object.keys(this._solarPlanetMeshes)) {
       const p = positions[key];
       const mesh = this._solarPlanetMeshes[key];
       if (!p || !mesh) continue;
@@ -1846,7 +2019,37 @@ class AstronomicalGlobeCard extends HTMLElement {
       const scale = p.distanceAU > 0 ? displayR / p.distanceAU : 0;
       mesh.position.set(p.x * scale, p.z * scale, p.y * scale);
     }
+    this._updateSolarMoonPosition(now);
     this._updateSolarInfoPanel();
+  }
+
+  /**
+   * Přepočítá LOKÁLNÍ pozici Měsíce vůči Zemi (viz `_solarMoonMesh`,
+   * přidaný jako dítě zemské mesh v `_initSolarScene`) podle skutečné
+   * aktuální fáze - `moon.phase` (0=nov, 0.5=úplněk) z astro.js je už
+   * definovaná jako (ekliptikální délka Měsíce - ekliptikální délka
+   * Slunce)/360°, takže `phase * 2π` je přesně úhel Měsíce vůči směru
+   * Země→Slunce, žádný nový výpočet navíc. 0° = Měsíc směrem ke Slunci
+   * (nov), 180° = na opačné straně (úplněk) - stejná prográdní rotace
+   * (rostoucí úhel = X směrem k Z) jako zbytek scény, viz komentář u
+   * `_updateSolarPositions()`.
+   */
+  _updateSolarMoonPosition(date) {
+    const moonMesh = this._solarMoonMesh;
+    const earthMesh = this._solarPlanetMeshes && this._solarPlanetMeshes.earth;
+    if (!moonMesh || !earthMesh) return;
+
+    const ex = earthMesh.position.x, ez = earthMesh.position.z;
+    const distToSun = Math.sqrt(ex * ex + ez * ez) || 1;
+    const sunDirX = -ex / distToSun, sunDirZ = -ez / distToSun;
+
+    const moon = getMoonPosition(date);
+    const angle = moon.phase * 2 * Math.PI;
+    const cosA = Math.cos(angle), sinA = Math.sin(angle);
+    const dirX = sunDirX * cosA - sunDirZ * sinA;
+    const dirZ = sunDirX * sinA + sunDirZ * cosA;
+
+    moonMesh.position.set(dirX * MOON_ORBIT_VISUAL_RADIUS, 0, dirZ * MOON_ORBIT_VISUAL_RADIUS);
   }
 
   /**
@@ -1869,11 +2072,15 @@ class AstronomicalGlobeCard extends HTMLElement {
     const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
     const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
     this._raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this._solarCamera);
-    const meshes = PLANET_ORDER.map((k) => this._solarPlanetMeshes[k]).filter(Boolean);
+    // Object.keys() místo PLANET_ORDER - zahrnuje i Pluto (v0.15.0), který
+    // v PLANET_ORDER záměrně není (viz komentář u ELEMENTS.pluto v
+    // planets.js), ale klikatelný/vybíratelný stejně jako ostatní být má.
+    const keys = Object.keys(this._solarPlanetMeshes);
+    const meshes = keys.map((k) => this._solarPlanetMeshes[k]).filter(Boolean);
     const hits = this._raycaster.intersectObjects(meshes, false);
     if (!hits.length) return null;
     const hitMesh = hits[0].object;
-    return PLANET_ORDER.find((k) => this._solarPlanetMeshes[k] === hitMesh) || null;
+    return keys.find((k) => this._solarPlanetMeshes[k] === hitMesh) || null;
   }
 
   /**
