@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.19.0
+ * @version 0.20.0
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -352,6 +352,34 @@
  * teď přiřadí i mini-Měsíci v solar view (žádný požadavek navíc); u Země
  * jde o druhý `TextureLoader.load()` na stejnou URL jako `earth-day.jpg`
  * pro glóbus, takže ho prohlížeč servíruje z vlastní HTTP cache.
+ *
+ * v0.20.0 - dvě nové fičury v pohledu GLÓBUS (na žádost uživatele, ne ze
+ * solar roadmapy):
+ * 1) ČASOVÁ ANIMACE glóbu (`.agc-globe-time` lišta pod tlačítky vpravo
+ *    nahoře, viz `_bindGlobeTimeControls`/`_setGlobeTimeSpeed`) - stejný
+ *    princip jako solar view (`_globeSimTime`/`_globeTimeSpeed`,
+ *    přepočítáváno KAŽDÝ SNÍMEK v `_frame()`), ale s jemnější granularitou
+ *    (minuty/hodiny/dny za sekundu, ne dny/týdny/měsíce/roky) - sleduje se
+ *    tu den/noc terminátor a fáze Měsíce v řádu hodin, ne oběžné dráhy
+ *    planet v řádu měsíců. Navíc VLASTNÍ rychlost přes číselné pole +
+ *    jednotku (`.agc-globe-time-custom`/`-unit`), na rozdíl od pevné
+ *    čtveřice u solaru - `_globeLastActiveSpeed` si pamatuje i vlastní
+ *    hodnotu přes pauzu/play, ne jen index do přednastavené řady. Horní
+ *    datum/čas (`.agc-overlay-top`) zůstává vždy reálné "teď", stejně jako
+ *    u solaru - simulovaný čas ovlivňuje jen 3D scénu (Slunce/Měsíc/
+ *    terminátor), ne horní hodiny.
+ * 2) "SEVER VŽDY NAHOŘE" (nové tlačítko se šipkou vedle zámku, viz
+ *    `onNorthLockToggle`/`_northLocked`) - přepínací režim, který omezí
+ *    tažení jen na YAW kolem PEVNÉ světové Y osy (žádný pitch), takže
+ *    `worldUp.applyQuaternion(_manualQuat)` v `_frame()` zůstává navždy
+ *    přesně `(0,1,0)` a pól se nikdy nenaklání pryč od svislé osy
+ *    obrazovky. Při zapnutí se `_manualQuat` jednorázově "sklopí" na
+ *    nejbližší čistě-yaw ekvivalent aktuální orientace (zahodí případný
+ *    pitch/roll z předchozího volného trackballu) - okamžitě, ne
+ *    animovaně, jde o jednorázovou akci na klik. Auto-návrat domů
+ *    (`_manualQuat.slerp(IDENTITY_QUATERNION, k)`) funguje beze změny i v
+ *    zamčeném režimu, protože slerp mezi dvěma kvaterniony se stejnou osou
+ *    zůstává po celou dobu na téže ose.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -359,8 +387,8 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.19.0';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.19.0';
+import * as THREE from './lib/three.module.min.js?v=0.20.0';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.20.0';
 import {
   getPlanetPositions,
   PLANET_ORDER,
@@ -369,7 +397,7 @@ import {
   NAKED_EYE_PLANETS,
   getPlutoPosition,
   PLUTO_MEAN_DISTANCE_AU,
-} from './lib/planets.js?v=0.19.0';
+} from './lib/planets.js?v=0.20.0';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -379,9 +407,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.19.0';
+} from './lib/earth-shaders.js?v=0.20.0';
 
-const CARD_VERSION = '0.19.0';
+const CARD_VERSION = '0.20.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -404,6 +432,17 @@ const MANUAL_RETURN_TIME_CONSTANT = 1.1;
 // "doma" - pod touto hranicí se slerp doběh zastaví a kvaternion se natvrdo
 // nastaví na identitu (ať navěky neběží nekonečně malé zbytkové kroky).
 const MANUAL_RETURN_SNAP_ANGLE = 0.001;
+// Časová animace pohledu glóbus (v0.20.0) - na rozdíl od solar view (dny za
+// sekundu, viz SOLAR_TIME_SPEED_PRESETS_DAYS_PER_SEC níž) potřebuje glóbus
+// jemnější granularitu (sleduje se den/noc terminátor a fáze Měsíce běžící
+// v řádu hodin, ne oběžné dráhy planet v řádu měsíců/let) - přednastavené
+// rychlosti proto jdou od minut. Interně se pořád počítá ve "dnech za
+// sekundu" jako solar, ať jde sdílet MS_PER_DAY a stejný _frame()-based
+// přírůstek (viz _frame() a formatGlobeTimeSpeed() níž).
+const GLOBE_TIME_SPEED_PRESETS_DAYS_PER_SEC = [1 / 1440, 10 / 1440, 1 / 24, 1]; // 1 min/s, 10 min/s, 1 h/s, 1 den/s
+// Jednotky vlastní (custom) rychlosti zadávané číselným polem + <select> v
+// UI - viz _bindGlobeTimeControls().
+const GLOBE_CUSTOM_UNIT_TO_DAYS_PER_SEC = { min: 1 / 1440, hour: 1 / 24, day: 1 };
 // Základní (referenční) hodnota atmosférické záře - config `atmosphere_
 // intensity` ji násobí (1.0 = tato hodnota).
 const ATMOSPHERE_BASE_INTENSITY = 1.55;
@@ -680,6 +719,20 @@ function formatDuration(hoursFloat) {
   const m = totalMinutes % 60;
   if (h <= 0) return `${m} min`;
   return `${h} h ${m} min`;
+}
+
+/** Čitelný popisek rychlosti časové animace glóbu (v0.20.0) - na rozdíl od
+ * solar view (SOLAR_TIME_SPEED_LABELS, pevná tabulka pro 4 přesné hodnoty)
+ * tahle funkce musí umět zobrazit i LIBOVOLNOU vlastní rychlost zadanou
+ * číselným polem, ne jen 4 přednastavené - proto obecný převod na
+ * "nejhezčí" jednotku podle velikosti, ne lookup tabulka. */
+function formatGlobeTimeSpeed(daysPerSec) {
+  const minPerSec = daysPerSec * 1440;
+  const round = (v) => Math.round(v * 100) / 100;
+  const abs = Math.abs(minPerSec);
+  if (abs < 60) return `${round(minPerSec)} min/s`;
+  if (abs < 1440) return `${round(minPerSec / 60)} h/s`;
+  return `${round(minPerSec / 1440)} d/s`;
 }
 
 function getLocale(hass) {
@@ -1061,6 +1114,33 @@ class AstronomicalGlobeCard extends HTMLElement {
                   <path d="M8 11V7a4 4 0 0 1 8 0v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                 </svg>
               </button>
+              <button type="button" class="agc-btn agc-btn-northlock" title="Lock rotation to sideways only (north always up)" aria-label="Lock rotation to sideways only (north always up)" aria-pressed="false">
+                <svg viewBox="0 0 24 24" width="16" height="16">
+                  <path d="M12 3 L12 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  <path d="M7 8 L12 3 L17 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  <line x1="6" y1="20" x2="18" y2="20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+              </button>
+            </div>
+            <div class="agc-globe-time">
+              <button type="button" class="agc-btn agc-globe-time-play" title="Play time animation" aria-label="Play time animation" aria-pressed="false">
+                <svg class="agc-icon-globe-time-play" viewBox="0 0 24 24" width="14" height="14">
+                  <path d="M6 4 L20 12 L6 20 Z" fill="currentColor"/>
+                </svg>
+                <svg class="agc-icon-globe-time-pause" viewBox="0 0 24 24" width="14" height="14" hidden>
+                  <rect x="5" y="4" width="5" height="16" fill="currentColor"/>
+                  <rect x="14" y="4" width="5" height="16" fill="currentColor"/>
+                </svg>
+              </button>
+              <button type="button" class="agc-globe-time-speed" title="Time animation speed (click to change)"></button>
+              <input type="number" class="agc-globe-time-custom" min="0.1" step="0.1" value="1" title="Custom speed value" aria-label="Custom speed value">
+              <select class="agc-globe-time-unit" title="Custom speed unit" aria-label="Custom speed unit">
+                <option value="min">min/s</option>
+                <option value="hour">h/s</option>
+                <option value="day">d/s</option>
+              </select>
+              <div class="agc-globe-time-label"></div>
+              <button type="button" class="agc-globe-time-today" title="Back to live time" style="display:none">Live</button>
             </div>
             <div class="agc-corner agc-corner-bl" title="Moon phase">
               <canvas class="agc-moon-icon" width="44" height="44"></canvas>
@@ -1120,6 +1200,7 @@ class AstronomicalGlobeCard extends HTMLElement {
       lockBtn: this.shadowRoot.querySelector('.agc-btn-lock'),
       lockIconUnlocked: this.shadowRoot.querySelector('.agc-icon-unlocked'),
       lockIconLocked: this.shadowRoot.querySelector('.agc-icon-locked'),
+      northLockBtn: this.shadowRoot.querySelector('.agc-btn-northlock'),
       solarBtn: this.shadowRoot.querySelector('.agc-btn-solar'),
       solarIconOn: this.shadowRoot.querySelector('.agc-icon-solar-on'),
       solarIconOff: this.shadowRoot.querySelector('.agc-icon-solar-off'),
@@ -1140,6 +1221,15 @@ class AstronomicalGlobeCard extends HTMLElement {
       solarTimeSpeed: this.shadowRoot.querySelector('.agc-solar-time-speed'),
       solarTimeLabel: this.shadowRoot.querySelector('.agc-solar-time-label'),
       solarTimeToday: this.shadowRoot.querySelector('.agc-solar-time-today'),
+      globeTimeBar: this.shadowRoot.querySelector('.agc-globe-time'),
+      globeTimePlay: this.shadowRoot.querySelector('.agc-globe-time-play'),
+      globeTimeIconPlay: this.shadowRoot.querySelector('.agc-icon-globe-time-play'),
+      globeTimeIconPause: this.shadowRoot.querySelector('.agc-icon-globe-time-pause'),
+      globeTimeSpeed: this.shadowRoot.querySelector('.agc-globe-time-speed'),
+      globeTimeCustom: this.shadowRoot.querySelector('.agc-globe-time-custom'),
+      globeTimeUnit: this.shadowRoot.querySelector('.agc-globe-time-unit'),
+      globeTimeLabel: this.shadowRoot.querySelector('.agc-globe-time-label'),
+      globeTimeToday: this.shadowRoot.querySelector('.agc-globe-time-today'),
     };
 
     this._clock = new THREE.Clock();
@@ -1147,6 +1237,7 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._bindDragRotation();
     this._bindViewControls();
     this._bindSolarTimeControls();
+    this._bindGlobeTimeControls();
     if (this._els.solarInfoClose) {
       // Křížek v info panelu = stejná akce jako klik na už vybranou planetu
       // (odvybrat) - viz _selectSolarPlanet().
@@ -1226,6 +1317,11 @@ class AstronomicalGlobeCard extends HTMLElement {
     // Díky tomu "pauza" skutečně zastaví VEŠKERÝ pohyb scény, ne jen tok
     // simulovaného data.
     this._solarAutoAz = 0;
+    // "Sever vždy nahoře" (v0.20.0, viz _bindViewControls/onNorthLockToggle
+    // a onPointerMove níž) - dokud je zapnuté, tažení otáčí `_manualQuat`
+    // JEN kolem světové Y osy (žádný pitch), takže pól nikdy nezmizí ze
+    // svislé osy obrazovky.
+    this._northLocked = false;
 
     // rad/px - horizontální tažení citlivější než vertikální (odpovídá tomu,
     // že otáčení kolem svislé osy působí přirozeněji než naklápění pólů).
@@ -1286,6 +1382,22 @@ class AstronomicalGlobeCard extends HTMLElement {
         const desiredEl = SOLAR_CAMERA_ELEVATION + this._solarElOffset - dy * SOLAR_DRAG_SENS_EL;
         const clampedEl = Math.max(SOLAR_EL_MIN, Math.min(SOLAR_EL_MAX, desiredEl));
         this._solarElOffset = clampedEl - SOLAR_CAMERA_ELEVATION;
+        this._lastInteractionT = this._clock.getElapsedTime();
+        return;
+      }
+
+      if (this._northLocked) {
+        // "Sever vždy nahoře" (v0.20.0) - jen YAW kolem PEVNÉ světové Y osy
+        // (ne kolem `currentUp` jako obecný trackball níž), žádný pitch.
+        // Dokud tenhle režim běží, `_manualQuat` proto vždy obsahuje jen
+        // čistou rotaci kolem světové Y osy, takže `worldUp.applyQuaternion
+        // (_manualQuat)` zůstává rovno `worldUp` samotnému - pól se tak
+        // nikdy nenaklání pryč od svislé osy obrazovky.
+        const worldUpAxis = new THREE.Vector3(0, 1, 0);
+        const yawAngle = -dx * SENS_AZ;
+        const qYaw = new THREE.Quaternion().setFromAxisAngle(worldUpAxis, yawAngle);
+        this._manualQuat.premultiply(qYaw);
+        this._manualQuat.normalize();
         this._lastInteractionT = this._clock.getElapsedTime();
         return;
       }
@@ -1409,6 +1521,44 @@ class AstronomicalGlobeCard extends HTMLElement {
       if (this._els.lockIconLocked) this._els.lockIconLocked.hidden = !locked;
     };
 
+    // "Sever vždy nahoře" (v0.20.0) - přepínací tlačítko vedle zámku. Po
+    // zapnutí tažení otáčí glóbus jen v azimutu (viz northLocked větev v
+    // onPointerMove), žádné naklánění pólu. Při ZAPNUTÍ se `_manualQuat`
+    // "sklopí" na nejbližší čistě azimutální ekvivalent aktuální orientace
+    // (viz komentář níž) - jinak by případný předchozí naklon (z obecného
+    // trackballu) v novém režimu zůstal navěky zamrzlý, protože pitch se
+    // v northLocked větvi už dál nemění.
+    const northLockBtn = this._els.northLockBtn;
+    const onNorthLockToggle = (ev) => {
+      ev.preventDefault();
+      this._northLocked = !this._northLocked;
+      if (northLockBtn) {
+        northLockBtn.classList.toggle('agc-btn-active', this._northLocked);
+        northLockBtn.setAttribute('aria-pressed', String(this._northLocked));
+        northLockBtn.title = this._northLocked
+          ? 'North-up lock is on - click to allow free tilt again'
+          : 'Lock rotation to sideways only (north always up)';
+      }
+      if (this._northLocked) {
+        // Aktuální směr pohledu (může být libovolně naklopený z předchozího
+        // volného trackballu) promítnutý do vodorovné roviny dá "kolik
+        // azimutu se toho už natočilo" - zbytek (pitch/roll) se tímhle
+        // zahodí, `_manualQuat` se přestaví na čistě yaw ekvivalent. Menší
+        // vizuální "sklopení" při zapnutí je záměrné a okamžité (ne
+        // animované) - jde o jednorázovou akci na kliknutí, ne o
+        // automatický návrat jako u tlačítka reset.
+        const camDir0 = this._location
+          ? geoToVector3(this._location.lat, this._location.lon, 1)
+          : new THREE.Vector3(0, 0, 1);
+        const currentDir = camDir0.clone().applyQuaternion(this._manualQuat);
+        const az0 = Math.atan2(camDir0.x, camDir0.z);
+        const azCur = Math.atan2(currentDir.x, currentDir.z);
+        const worldUpAxis = new THREE.Vector3(0, 1, 0);
+        this._manualQuat.setFromAxisAngle(worldUpAxis, azCur - az0);
+      }
+    };
+    if (northLockBtn) northLockBtn.addEventListener('click', onNorthLockToggle);
+
     resetBtn.addEventListener('click', onReset);
     lockBtn.addEventListener('click', onLockToggle);
 
@@ -1423,6 +1573,7 @@ class AstronomicalGlobeCard extends HTMLElement {
     this._viewControlsUnbind = () => {
       resetBtn.removeEventListener('click', onReset);
       lockBtn.removeEventListener('click', onLockToggle);
+      if (northLockBtn) northLockBtn.removeEventListener('click', onNorthLockToggle);
       solarBtn.removeEventListener('click', onSolarToggle);
     };
   }
@@ -1563,6 +1714,149 @@ class AstronomicalGlobeCard extends HTMLElement {
   }
 
   /**
+   * Časová animace pohledu glóbus (v0.20.0) - `.agc-globe-time` lišta u
+   * tlačítek vpravo nahoře. Na rozdíl od solar view (kde je časová animace
+   * jediný způsob, jak vidět pohyb planet) tady jde hlavně o zrychlené
+   * sledování den/noc terminátoru a fáze Měsíce - proto jemnější
+   * přednastavené kroky (minuty) a navíc VLASTNÍ rychlost (číselné pole +
+   * jednotka), na rozdíl od pevné čtveřice u solaru. `_globeSimTime`/
+   * `_globeTimeSpeed` fungují stejně jako `_solarSimTime`/`_solarTimeSpeed`:
+   * `null`/`0` = živé sledování reálného "teď" (beze změny oproti dřívějšku,
+   * horní datum/čas v `.agc-overlay-top` zůstává vždy reálný čas - jen 3D
+   * scéna/terminátor/Měsíc se řídí simulovaným časem, stejně jako u solaru
+   * simulovaný čas neovlivňuje horní datum/čas, jen 3D scénu sluneční
+   * soustavy). Přepočet KAŽDÝ SNÍMEK dělá `_frame()`, ne tahle metoda.
+   */
+  _bindGlobeTimeControls() {
+    const playBtn = this._els.globeTimePlay;
+    const speedBtn = this._els.globeTimeSpeed;
+    const todayBtn = this._els.globeTimeToday;
+    const customInput = this._els.globeTimeCustom;
+    const unitSelect = this._els.globeTimeUnit;
+    if (!playBtn || !speedBtn || !todayBtn) return;
+
+    this._globeSimTime = null;
+    this._globeTimeSpeed = 0;
+    this._globeTimeSpeedPresetIdx = 0;
+    // Rychlost, která se má obnovit při stisku "play" po pauze - na rozdíl
+    // od solaru (kde play vždy obnoví AKTUÁLNÍ index přednastavené řady)
+    // si tohle pamatuje i VLASTNÍ (custom) rychlost zadanou číselným polem,
+    // ať pauza/přehrát nezahodí ruční nastavení uživatele.
+    this._globeLastActiveSpeed = GLOBE_TIME_SPEED_PRESETS_DAYS_PER_SEC[0];
+
+    const onPlayToggle = (ev) => {
+      ev.preventDefault();
+      if (this._globeTimeSpeed !== 0) {
+        this._setGlobeTimeSpeed(0);
+      } else {
+        this._setGlobeTimeSpeed(this._globeLastActiveSpeed);
+      }
+    };
+    const onSpeedCycle = (ev) => {
+      ev.preventDefault();
+      this._globeTimeSpeedPresetIdx =
+        (this._globeTimeSpeedPresetIdx + 1) % GLOBE_TIME_SPEED_PRESETS_DAYS_PER_SEC.length;
+      // Stejně jako u solaru: změna rychlosti vždy rovnou (znovu)spustí
+      // přehrávání - úprava rychlosti na pauze by nic neukázala.
+      this._setGlobeTimeSpeed(GLOBE_TIME_SPEED_PRESETS_DAYS_PER_SEC[this._globeTimeSpeedPresetIdx]);
+    };
+    const onToday = (ev) => {
+      ev.preventDefault();
+      this._resetGlobeTime();
+    };
+    // Vlastní rychlost (v0.20.0) - číselné pole + jednotka. Na rozdíl od
+    // přednastavené řady (tlačítko rychlosti) jde zadat LIBOVOLNOU hodnotu
+    // (např. "2.5 h/s"). Aplikuje se na change (Enter/blur u čísla, výběr u
+    // <select>) - stejný princip jako datumový picker u solaru (v0.17.0):
+    // změna se projeví okamžitě, ne až po potvrzení samostatným tlačítkem.
+    const onCustomChange = (ev) => {
+      ev.preventDefault();
+      const n = customInput ? parseFloat(customInput.value) : NaN;
+      const unit = unitSelect ? unitSelect.value : 'hour';
+      if (!Number.isFinite(n) || n <= 0) return;
+      const perUnit = GLOBE_CUSTOM_UNIT_TO_DAYS_PER_SEC[unit] || GLOBE_CUSTOM_UNIT_TO_DAYS_PER_SEC.hour;
+      this._setGlobeTimeSpeed(n * perUnit);
+    };
+    if (customInput) customInput.addEventListener('change', onCustomChange);
+    if (unitSelect) unitSelect.addEventListener('change', onCustomChange);
+
+    playBtn.addEventListener('click', onPlayToggle);
+    speedBtn.addEventListener('click', onSpeedCycle);
+    todayBtn.addEventListener('click', onToday);
+
+    this._globeTimeControlsUnbind = () => {
+      playBtn.removeEventListener('click', onPlayToggle);
+      speedBtn.removeEventListener('click', onSpeedCycle);
+      todayBtn.removeEventListener('click', onToday);
+      if (customInput) customInput.removeEventListener('change', onCustomChange);
+      if (unitSelect) unitSelect.removeEventListener('change', onCustomChange);
+    };
+
+    this._updateGlobeTimeUi();
+  }
+
+  /** Nastaví rychlost časové animace glóbu; při startu z pauzy (0 →
+   * nenulová) začíná simulovaný čas vždy OD TEĎKA, ne odkud skončila
+   * minulá relace (stejná konvence jako u solaru, viz _setSolarTimeSpeed). */
+  _setGlobeTimeSpeed(daysPerSec) {
+    this._globeTimeSpeed = daysPerSec;
+    if (daysPerSec !== 0) {
+      this._globeLastActiveSpeed = daysPerSec;
+      if (!this._globeSimTime) this._globeSimTime = new Date();
+    }
+    this._updateGlobeTimeUi();
+  }
+
+  /** Vrátí časovou animaci glóbu do výchozího stavu (živé sledování
+   * reálného "teď") - voláno tlačítkem "Live" i při odchodu do solar view
+   * (viz setViewMode). Rychlost pro příští "play" (_globeLastActiveSpeed)
+   * se záměrně NEresetuje, ať uživatel po návratu nemusí rychlost nastavovat
+   * znovu. */
+  _resetGlobeTime() {
+    this._globeSimTime = null;
+    this._globeTimeSpeed = 0;
+    this._updateGlobeTimeUi();
+  }
+
+  /** Přepíše ikonu play/pauza, text přednastavené rychlosti, viditelnost
+   * tlačítka "Live" a datumový/časový popisek podle aktuálního stavu
+   * `_globeSimTime`/`_globeTimeSpeed`. Číselné pole/jednotku vlastní
+   * rychlosti záměrně NEpřepisuje (na rozdíl od solarového date pickeru) -
+   * je to čistě vstupní ovládací prvek, přepisování za běhu by rušilo
+   * uživatele uprostřed psaní vlastní hodnoty. */
+  _updateGlobeTimeUi() {
+    const playBtn = this._els.globeTimePlay;
+    if (!playBtn) return;
+
+    const playing = this._globeTimeSpeed !== 0;
+    playBtn.setAttribute('aria-pressed', String(playing));
+    playBtn.title = playing ? 'Pause time animation' : 'Play time animation';
+    if (this._els.globeTimeIconPlay) this._els.globeTimeIconPlay.hidden = playing;
+    if (this._els.globeTimeIconPause) this._els.globeTimeIconPause.hidden = !playing;
+
+    if (this._els.globeTimeSpeed) {
+      const shownSpeed = this._globeTimeSpeed !== 0 ? this._globeTimeSpeed : this._globeLastActiveSpeed;
+      this._els.globeTimeSpeed.textContent = formatGlobeTimeSpeed(shownSpeed || GLOBE_TIME_SPEED_PRESETS_DAYS_PER_SEC[0]);
+    }
+
+    const diverged = !!this._globeSimTime;
+    if (this._els.globeTimeToday) this._els.globeTimeToday.style.display = diverged ? '' : 'none';
+
+    if (this._els.globeTimeLabel) {
+      const newText = diverged
+        ? this._globeSimTime.toLocaleString(getLocale(this._hass), {
+            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: !uses24h(this._hass),
+          })
+        : '';
+      // Zbytečné přepisování stejného textu 60×/s (voláno i z _frame() během
+      // animace) je jen plýtvání - přeskočit, když se nic nezměnilo.
+      if (this._els.globeTimeLabel.textContent !== newText) {
+        this._els.globeTimeLabel.textContent = newText;
+      }
+    }
+  }
+
+  /**
    * Přepne mezi pohledem "glóbus" (`'globe'`, výchozí) a "sluneční soustava"
    * (`'solar'`) - viz tlačítko vlevo nahoře. Obě scény sdílí stejný
    * renderer/canvas (viz `_initSolarScene`), takže přepnutí je jen změna
@@ -1593,9 +1887,15 @@ class AstronomicalGlobeCard extends HTMLElement {
     if (this._els.cornerBl) this._els.cornerBl.style.display = isSolar ? 'none' : '';
     if (this._els.cornerBr) this._els.cornerBr.style.display = isSolar ? 'none' : '';
     if (this._els.solarTimeBar) this._els.solarTimeBar.style.display = isSolar ? '' : 'none';
+    // v0.20.0: časová lišta glóbu je viditelná přesně opačně než solarová.
+    if (this._els.globeTimeBar) this._els.globeTimeBar.style.display = isSolar ? 'none' : '';
 
     if (isSolar) {
       this._updateSolarPositions(new Date());
+      // Odchod z glóbu do sluneční soustavy zruší i časovou animaci glóbu
+      // (v0.20.0) - stejný důvod jako u opačného směru níž: při příštím
+      // návratu na glóbus se má vždy startovat od živého "teď".
+      this._resetGlobeTime();
     } else {
       // Odchod z pohledu sluneční soustavy zruší výběr planety i časovou
       // animaci (v0.11.0) - ať se při příštím otevření startuje vždy z
@@ -1620,6 +1920,7 @@ class AstronomicalGlobeCard extends HTMLElement {
     const display = show ? '' : 'none';
     if (this._els.resetBtn) this._els.resetBtn.style.display = display;
     if (this._els.lockBtn) this._els.lockBtn.style.display = display;
+    if (this._els.northLockBtn) this._els.northLockBtn.style.display = display;
   }
 
   _css() {
@@ -1699,7 +2000,7 @@ class AstronomicalGlobeCard extends HTMLElement {
       }
       .agc-btn:hover { opacity: 1; background: rgba(0,0,0,0.55); }
       .agc-btn:active { transform: scale(0.92); }
-      .agc-btn-lock.agc-btn-active {
+      .agc-btn-lock.agc-btn-active, .agc-btn-northlock.agc-btn-active {
         background: var(--agc-accent, #33e6b0); color: #06231a; opacity: 1;
       }
 
@@ -1770,6 +2071,44 @@ class AstronomicalGlobeCard extends HTMLElement {
       .agc-solar-time-date:hover, .agc-solar-time-date:focus {
         background: rgba(255,255,255,0.14); outline: none;
       }
+
+      /* Časová animace glóbu (v0.20.0) - na rozdíl od .agc-solar-time (jedna
+         centrovaná pilulka dole, dost místa) sedí pod tlačítky vpravo nahoře
+         (.agc-view-controls, top:10px + ~34px výšky řádku tlačítek), ať
+         nekoliduje s .agc-overlay-bottom/corner ikonami dole (viz stará
+         poznámka u .agc-solar-info o stejném typu kolize). flex-wrap, ať se
+         na užší kartě (6 prvků: play/rychlost/číslo/jednotka/popisek/live)
+         rozloží do více řádků místo přetečení mimo kartu. */
+      .agc-globe-time {
+        position: absolute; top: 44px; right: 10px; z-index: 3;
+        display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center;
+        gap: 5px; max-width: 210px; pointer-events: auto;
+      }
+      .agc-globe-time-play {
+        width: 24px; height: 24px;
+      }
+      .agc-globe-time-speed, .agc-globe-time-today {
+        border: none; background: rgba(0,0,0,0.4); color: #fff;
+        font-size: 10px; font-weight: 600; padding: 3px 7px; border-radius: 10px;
+        cursor: pointer; opacity: 0.85; transition: opacity 0.15s ease, background-color 0.15s ease;
+      }
+      .agc-globe-time-speed:hover, .agc-globe-time-today:hover {
+        opacity: 1; background: rgba(0,0,0,0.6);
+      }
+      .agc-globe-time-custom {
+        width: 40px; border: none; background: rgba(0,0,0,0.4); color: #fff;
+        font-size: 10px; padding: 3px 4px; border-radius: 8px; text-align: right;
+        color-scheme: dark;
+      }
+      .agc-globe-time-unit {
+        border: none; background: rgba(0,0,0,0.4); color: #fff;
+        font-size: 10px; padding: 3px 2px; border-radius: 8px; color-scheme: dark;
+      }
+      .agc-globe-time-label {
+        flex-basis: 100%; text-align: right; font-size: 10px; color: #cfe3ff;
+        font-variant-numeric: tabular-nums; text-shadow: 0 1px 6px rgba(0,0,0,0.85);
+      }
+      .agc-globe-time-label:empty { display: none; }
 
       .agc-error {
         position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -2733,7 +3072,20 @@ class AstronomicalGlobeCard extends HTMLElement {
     }
 
     if (!this._location) return;
-    const now = new Date();
+
+    // Časová animace glóbu (v0.20.0) - stejný princip jako u solaru
+    // (_frameSolar výš): posune simulovaný čas o (rychlost × dt) KAŽDÝ
+    // SNÍMEK, ať animace neškube ani při vyšších rychlostech (hodina/den
+    // za sekundu). Horní datum/čas v `.agc-overlay-top` zůstává vždy
+    // reálným "teď" (aktualizuje ho _updateUiText() 1×/s nezávisle) -
+    // simulovaný čas ovlivňuje jen 3D scénu níž (Slunce/Měsíc/terminátor),
+    // přesně jako u solaru simulovaný čas neovlivňuje horní datum, jen
+    // scénu sluneční soustavy.
+    if (this._globeTimeSpeed !== 0) {
+      this._globeSimTime = new Date(this._globeSimTime.getTime() + this._globeTimeSpeed * dt * MS_PER_DAY);
+      this._updateGlobeTimeUi();
+    }
+    const now = this._globeSimTime || new Date();
 
     const sun = getSunPosition(now);
     const sunDirWorld = geoToVector3(sun.lat, sun.lon, 1);

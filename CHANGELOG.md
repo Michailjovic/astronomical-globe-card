@@ -4,6 +4,19 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
+## [0.20.0] - 2026-08-13
+
+### Added
+- Globe view: time animation. A new control bar next to the view buttons
+  lets you play/pause a sped-up clock (1 min/s, 10 min/s, 1 h/s, 1 day/s
+  presets, plus a custom numeric speed with min/hour/day units) to watch
+  the day/night terminator and Moon phase move in fast motion. The header
+  date/time stays real-time, same as the Solar System view's time
+  animation only affecting its own scene.
+- Globe view: a new "north-up lock" toggle button constrains dragging to
+  sideways-only rotation, so north always stays at the top of the screen
+  instead of the globe being freely tiltable.
+
 ## [0.19.0] - 2026-08-13
 
 ### Added
