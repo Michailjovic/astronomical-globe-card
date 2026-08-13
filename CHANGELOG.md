@@ -4,6 +4,24 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
+## [0.9.0] - 2026-08-13
+
+### Added
+- New "Solar System" view, toggled by a button in the top-left corner: the
+  Sun, all 8 planets at today's actual position, and their orbits, replacing
+  the globe in place (same button toggles back). Planet positions come from
+  a new `lib/planets.js` module (simplified J2000 mean Keplerian elements +
+  Newton-Raphson solution of Kepler's equation - accuracy on the order of
+  arcminutes, plenty for this visualization). Distances from the Sun
+  (0.39-30 AU) are compressed with a square-root scale so all eight orbits
+  fit legibly in frame - not an astronomically accurate scale (that would
+  shrink the inner planets to invisible dots next to the Sun), just a
+  readable diagram that preserves the correct order and a plausible sense
+  of relative spacing. Shares the same renderer/canvas/WebGL context as the
+  globe (no second GPU context) - only which Scene/camera pair gets
+  rendered is switched. No manual rotation yet in this view (unlike the
+  globe) - just a slow decorative orbit of the camera around the Sun.
+
 ## [0.8.0] - 2026-08-13
 
 ### Added
