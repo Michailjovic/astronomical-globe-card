@@ -4,6 +4,24 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
+## [0.13.0] - 2026-08-13
+
+### Added
+- Fourth batch of the Solar System view roadmap: **"what's visible from
+  Earth tonight"**. A new `getPlanetHorizontalPositions()` in
+  `lib/planets.js` converts each naked-eye planet's position (Mercury
+  through Saturn - Uranus and Neptune aren't naked-eye visible, so they're
+  excluded) into altitude and azimuth for your configured home location,
+  via the standard ecliptic → equatorial → horizontal coordinate chain.
+  The selected planet's info panel now shows whether it's currently above
+  the horizon, roughly where in the sky (compass direction), and whether
+  it's dark enough at home to actually see it. During time animation
+  (v0.11.0) this is computed for the simulated moment, not live "now", so
+  it stays consistent with whatever the scene is showing. The underlying
+  math was validated independently: at the planet's "sub-point" (the spot
+  on Earth directly underneath it) the computed altitude comes out to
+  90.00° to within a hundredth of a degree, and -90.00° at the antipode.
+
 ## [0.12.0] - 2026-08-13
 
 ### Added

@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.12.0
+ * @version 0.13.0
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -250,6 +250,21 @@
  * prahové stavy se ukáže jen "XX° od Slunce - viditelný večer/ráno" podle
  * toho, jestli je planeta východně (večernice) nebo západně (jitřenka) od
  * Slunce na obloze.
+ *
+ * v0.13.0 - čtvrtá dávka roadmapy: "CO JE DNES VIDĚT ZE ZEMĚ". Nová
+ * `getPlanetHorizontalPositions()` v `lib/planets.js` převádí heliocentrické
+ * pozice planet (Merkur-Saturn - Uran/Neptun nejdou pouhým okem vidět, proto
+ * vynechány, viz `NAKED_EYE_PLANETS`) na výšku nad obzorem + azimut pro
+ * domovskou GPS polohu (standardní řetězec ekliptika → rovníkové (RA/Dec) →
+ * horizontální souřadnice, Meeus). Info panel vybrané planety teď navíc
+ * ukazuje, jestli je zrovna nad obzorem, kde na obloze (světová strana), a
+ * jestli je u domovské polohy zrovna tma (`_isNightAtHome()`, stejná
+ * východ/západ logika jako odpočet v hlavičce karty). Během časové animace
+ * (v0.11.0) se počítá pro SIMULOVANÝ čas, ne pro živé "teď"
+ * (`_solarPositionsDate`) - ať je to vždy konzistentní s tím, co je zrovna
+ * vidět ve scéně. Matematika ověřena samostatně: v "podplanetárním bodě"
+ * (lat=deklinace, lon odvozeno z RA a hvězdného času) vychází výška ~90° s
+ * přesností na setiny stupně, stejně přesně -90° v antipodu.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -257,9 +272,15 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.12.0';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.12.0';
-import { getPlanetPositions, PLANET_ORDER, PLANET_MEAN_DISTANCE_AU } from './lib/planets.js?v=0.12.0';
+import * as THREE from './lib/three.module.min.js?v=0.13.0';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.13.0';
+import {
+  getPlanetPositions,
+  PLANET_ORDER,
+  PLANET_MEAN_DISTANCE_AU,
+  getPlanetHorizontalPositions,
+  NAKED_EYE_PLANETS,
+} from './lib/planets.js?v=0.13.0';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -269,9 +290,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.12.0';
+} from './lib/earth-shaders.js?v=0.13.0';
 
-const CARD_VERSION = '0.12.0';
+const CARD_VERSION = '0.13.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -519,6 +540,25 @@ function describeSolarAlignment(key, elong, earthDistanceAU) {
   }
   const side = elong.diffLon > 0 ? 'večer po západu Slunce' : 'ráno před východem Slunce';
   return `${Math.round(elong.elongationDeg)}° od Slunce - viditelný ${side}`;
+}
+
+// -- "Co je dnes vidět ze Země" v info panelu solar view (v0.13.0) --------
+const COMPASS_LABELS_CS = ['S', 'SV', 'V', 'JV', 'J', 'JZ', 'Z', 'SZ'];
+
+/** Azimut (0-360°, 0=sever) -> nejbližší z 8 světových stran česky. */
+function compassLabel(azimuthDeg) {
+  const idx = Math.round(azimuthDeg / 45) % 8;
+  return COMPASS_LABELS_CS[idx];
+}
+
+/** Popisný text k tomu, jestli/kde je planeta právě vidět z domovské
+ * polohy - `isNight` je `null`, když domovská poloha není nastavená
+ * (viz `_isNightAtHome`). */
+function describeVisibility(altitudeDeg, azimuthDeg, isNight) {
+  if (altitudeDeg <= 0) return 'pod obzorem';
+  const altText = `${Math.round(altitudeDeg)}° nad obzorem (${compassLabel(azimuthDeg)})`;
+  if (isNight === null) return altText;
+  return isNight ? `${altText} - viditelný teď` : `${altText}, ale zatím denní světlo`;
 }
 
 function formatDuration(hoursFloat) {
@@ -789,6 +829,7 @@ class AstronomicalGlobeCard extends HTMLElement {
               <div class="agc-solar-info-row agc-solar-info-sun"></div>
               <div class="agc-solar-info-row agc-solar-info-earth"></div>
               <div class="agc-solar-info-row agc-solar-info-align"></div>
+              <div class="agc-solar-info-row agc-solar-info-visibility"></div>
             </div>
             <div class="agc-solar-time" style="display:none">
               <button type="button" class="agc-btn agc-solar-time-play" title="Přehrát časovou animaci" aria-label="Přehrát časovou animaci" aria-pressed="false">
@@ -838,6 +879,7 @@ class AstronomicalGlobeCard extends HTMLElement {
       solarInfoSun: this.shadowRoot.querySelector('.agc-solar-info-sun'),
       solarInfoEarth: this.shadowRoot.querySelector('.agc-solar-info-earth'),
       solarInfoAlign: this.shadowRoot.querySelector('.agc-solar-info-align'),
+      solarInfoVisibility: this.shadowRoot.querySelector('.agc-solar-info-visibility'),
       solarTimeBar: this.shadowRoot.querySelector('.agc-solar-time'),
       solarTimePlay: this.shadowRoot.querySelector('.agc-solar-time-play'),
       solarTimeIconPlay: this.shadowRoot.querySelector('.agc-icon-time-play'),
@@ -1788,6 +1830,11 @@ class AstronomicalGlobeCard extends HTMLElement {
     // info panel (`_updateSolarInfoPanel`) z toho počítá SKUTEČNOU vzdálenost
     // planeta-Země, což by ze zobrazovací (odmocninové) škály vyšlo špatně.
     this._solarRawPositions = positions;
+    // Referenční datum k téhle sadě pozic (živé "teď", nebo simulovaný čas
+    // během časové animace, viz v0.11.0) - "co je dnes vidět ze Země"
+    // (v0.13.0) musí počítat výšku nad obzorem pro STEJNÝ okamžik, ne
+    // znovu volat `new Date()` a rozjet se s tím, co se zrovna kreslí.
+    this._solarPositionsDate = now;
     for (const key of PLANET_ORDER) {
       const p = positions[key];
       const mesh = this._solarPlanetMeshes[key];
@@ -1881,6 +1928,39 @@ class AstronomicalGlobeCard extends HTMLElement {
       if (this._els.solarInfoEarth) this._els.solarInfoEarth.textContent = '';
       if (this._els.solarInfoAlign) this._els.solarInfoAlign.textContent = '';
     }
+
+    // "Co je dnes vidět ze Země" (v0.13.0) - jen pro planety viditelné
+    // pouhým okem (viz NAKED_EYE_PLANETS) a jen když je domovská poloha
+    // známá (bez ní nejde spočítat výšku nad obzorem/azimut). Datum musí
+    // odpovídat SADĚ pozic výš (`_solarPositionsDate`) - živé "teď", nebo
+    // simulovaný čas během časové animace (v0.11.0), ne nezávislé
+    // `new Date()`.
+    if (this._els.solarInfoVisibility) {
+      if (this._location && NAKED_EYE_PLANETS.includes(key)) {
+        const refDate = this._solarPositionsDate || new Date();
+        const horizontal = getPlanetHorizontalPositions(refDate, this._location.lat, this._location.lon);
+        const h = horizontal[key];
+        const isNight = this._isNightAtHome(refDate);
+        this._els.solarInfoVisibility.textContent = h ? describeVisibility(h.altitudeDeg, h.azimuthDeg, isNight) : '';
+      } else {
+        this._els.solarInfoVisibility.textContent = '';
+      }
+    }
+  }
+
+  /**
+   * `true` = po setmění (nebo polární noc), `false` = ještě/už denní
+   * světlo, `null` = domovská poloha není známá (nedá se spočítat). Stejná
+   * "před východem/po západu" logika jako `_updateUiText()`'s odpočet do
+   * východu/západu, jen jako jednoduchý boolean pro info panel (v0.13.0).
+   */
+  _isNightAtHome(now) {
+    if (!this._location) return null;
+    const times = getSunTimes(now, this._location.lat, this._location.lon);
+    if (times.polar === 'night') return true;
+    if (times.polar === 'day') return false;
+    if (!times.sunrise || !times.sunset) return null;
+    return now < times.sunrise || now >= times.sunset;
   }
 
   _reloadTextures() {

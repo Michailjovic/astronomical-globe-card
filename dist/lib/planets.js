@@ -16,6 +16,7 @@
  */
 
 const RAD = Math.PI / 180;
+const DEG = 180 / Math.PI;
 
 function toJulian(date) {
   return date.getTime() / 86400000 + 2440587.5;
@@ -31,6 +32,20 @@ function norm180(deg) {
   if (d > 180) d -= 360;
   if (d <= -180) d += 360;
   return d;
+}
+
+/** Normalizuje úhel (stupně) do rozsahu [0, 360). */
+function norm360(deg) {
+  let d = deg % 360;
+  if (d < 0) d += 360;
+  return d;
+}
+
+/** Střední šikmost ekliptiky (stupně) pro Juliánské století T - stejný
+ * IAU vzorec jako astro.js (zámerně zduplikováno, ať je tenhle modul
+ * nezávislý na astro.js - žádný nový cross-modulový vztah navíc). */
+function meanObliquityDeg(T) {
+  return 23 + (26 + (21.448 - T * (46.815 + T * (0.00059 - T * 0.001813))) / 60) / 60;
 }
 
 // Střední elementy J2000.0 a jejich rychlosti za Juliánské století.
@@ -195,6 +210,75 @@ export function getPlanetPositions(date) {
   const result = {};
   for (const key of PLANET_ORDER) {
     result[key] = planetHeliocentric(key, T);
+  }
+  return result;
+}
+
+/** Planety rozeznatelné pouhým okem - Uran je za ideálních podmínek na
+ * hraně viditelnosti (~5.7 mag), Neptun ne, oba proto vynechány z
+ * "co je dnes vidět ze Země" (v0.13.0). */
+export const NAKED_EYE_PLANETS = ['mercury', 'venus', 'mars', 'jupiter', 'saturn'];
+
+/**
+ * Greenwichský hvězdný čas (stupně, 0-360) pro dané Date - standardní
+ * IAU aproximace (stejný vzorec jako u sublunárního bodu v astro.js).
+ */
+export function getGreenwichSiderealTimeDeg(date) {
+  const jd = toJulian(date);
+  return norm360(280.46061837 + 360.98564736629 * (jd - 2451545.0));
+}
+
+/**
+ * Výška nad obzorem + azimut (od severu po směru hodinových ručiček) pro
+ * naked-eye planety (viz NAKED_EYE_PLANETS), z dané zeměpisné polohy a
+ * času - "co je dnes vidět ze Země" (v0.13.0). Standardní řetězec převodů
+ * heliocentrická ekliptika -> geocentrická ekliptika -> rovníkové (RA/Dec)
+ * -> horizontální (výška/azimut) souřadnice (Meeus, "Astronomical
+ * Algorithms" - stejný zdroj jako astro.js). `raDeg`/`decDeg` v návratové
+ * hodnotě jsou geocentrické (nezávisí na pozorovateli) - užitečné i mimo
+ * tuhle funkci (test na `_subpoint_` konzistenci, budoucí rozšíření).
+ * Vrací `{ mercury: {altitudeDeg, azimuthDeg, raDeg, decDeg}, venus: {...}, ... }`.
+ */
+export function getPlanetHorizontalPositions(date, lat, lon) {
+  const jd = toJulian(date);
+  const T = julianCenturies(jd);
+  const epsR = meanObliquityDeg(T) * RAD;
+  const earth = planetHeliocentric('earth', T);
+
+  const gmstDeg = getGreenwichSiderealTimeDeg(date);
+  const latR = lat * RAD;
+  const cosLat = Math.cos(latR), sinLat = Math.sin(latR);
+
+  const result = {};
+  for (const key of NAKED_EYE_PLANETS) {
+    const p = planetHeliocentric(key, T);
+    // Geocentrická ekliptika = heliocentrická planeta MÍNUS heliocentrická
+    // Země (stejný princip jako vzdálenost planeta-Země jinde v kartě).
+    const gx = p.x - earth.x, gy = p.y - earth.y, gz = p.z - earth.z;
+    const r = Math.sqrt(gx * gx + gy * gy + gz * gz) || 1;
+
+    // Ekliptika -> rovníkové (rotace kolem osy x o šikmost ekliptiky).
+    const raR = Math.atan2(gy * Math.cos(epsR) - gz * Math.sin(epsR), gx);
+    const decR = Math.asin(Math.max(-1, Math.min(1, (gy * Math.sin(epsR) + gz * Math.cos(epsR)) / r)));
+    const raDeg = norm360(raR * DEG);
+    const decDeg = decR * DEG;
+
+    // Rovníkové -> horizontální (výška/azimut) pro pozorovatele na (lat, lon).
+    const lstDeg = norm360(gmstDeg + lon);
+    const hR = norm180(lstDeg - raDeg) * RAD;
+
+    const sinAlt = Math.sin(decR) * sinLat + Math.cos(decR) * cosLat * Math.cos(hR);
+    const altDeg = Math.asin(Math.max(-1, Math.min(1, sinAlt))) * DEG;
+    const cosAlt = Math.cos(altDeg * RAD);
+
+    let azDeg = 0;
+    if (Math.abs(cosAlt) > 1e-9 && Math.abs(cosLat) > 1e-9) {
+      const sinAz = (-Math.sin(hR) * Math.cos(decR)) / cosAlt;
+      const cosAz = (Math.sin(decR) - sinAlt * sinLat) / (cosAlt * cosLat);
+      azDeg = norm360(Math.atan2(sinAz, cosAz) * DEG);
+    }
+
+    result[key] = { altitudeDeg: altDeg, azimuthDeg: azDeg, raDeg, decDeg };
   }
   return result;
 }
