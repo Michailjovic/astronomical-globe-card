@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.20.0
+ * @version 0.21.0
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -380,6 +380,16 @@
  *    (`_manualQuat.slerp(IDENTITY_QUATERNION, k)`) funguje beze změny i v
  *    zamčeném režimu, protože slerp mezi dvěma kvaterniony se stejnou osou
  *    zůstává po celou dobu na téže ose.
+ *
+ * v0.21.0 - oprava: zvýrazňovací halo Země v solar view (`_earthHighlightSprite`,
+ * viz v0.11.0 výš) je 5× větší než samotná planeta - v PŘEHLEDU celé
+ * soustavy je to záměr (jinak by Země v dálce splynula s tečkou), ale po
+ * přiblížení přímo na Zemi (klik → zoom) tu samou plochu s aditivním
+ * mícháním úplně přebilo modrou září a planeta pod ní nebyla prakticky
+ * vidět (nahlášeno uživatelem). `_frameSolar()` teď halo opacitu plynule
+ * (stejnou exponenciální rychlostí jako dolet kamery) stahuje na 0, kdykoli
+ * je zrovna zaostřená Země (`EARTH_HIGHLIGHT_ZOOM_OPACITY`), a zase
+ * rozsvítí zpátky při odzoomování/výběru jiné planety.
  */
 
 // POZOR: verze v query stringu níže (?v=0.3.10) je záměrně napsaná natvrdo,
@@ -387,8 +397,8 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.20.0';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.20.0';
+import * as THREE from './lib/three.module.min.js?v=0.21.0';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.21.0';
 import {
   getPlanetPositions,
   PLANET_ORDER,
@@ -397,7 +407,7 @@ import {
   NAKED_EYE_PLANETS,
   getPlutoPosition,
   PLUTO_MEAN_DISTANCE_AU,
-} from './lib/planets.js?v=0.20.0';
+} from './lib/planets.js?v=0.21.0';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -407,9 +417,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.20.0';
+} from './lib/earth-shaders.js?v=0.21.0';
 
-const CARD_VERSION = '0.20.0';
+const CARD_VERSION = '0.21.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -556,6 +566,13 @@ const SOLAR_FOCUS_TIME_CONSTANT = 0.45;
 // blízko, aby planeta zaplnila celý záběr/oříznula se do kamery.
 const SOLAR_FOCUS_DIST_FACTOR = 7;
 const SOLAR_FOCUS_MIN_DIST = 0.45;
+// Poloprůhledné zvýrazňovací halo Země (viz `_earthHighlightSprite` v
+// `_initSolarScene`) je v PŘEHLEDU celé soustavy užitečné (odliší Zemi od
+// Marsu/Venuše na dálku), ale po přiblížení přímo na Zemi (v0.21.0,
+// nahlášeno uživatelem) tu samou plochu s aditivním mícháním úplně
+// přebilo a planeta pod ním nebyla vidět. 0 = úplně zhasnout, dokud je
+// Země zaostřená - viz `_frameSolar()`.
+const EARTH_HIGHLIGHT_ZOOM_OPACITY = 0;
 // Sdílený referenční bod "beze změny" (Slunce, počátek scény) pro
 // _solarFocusPoint, když není vybraná žádná planeta - nikdy se nemutuje.
 const SOLAR_ORIGIN = new THREE.Vector3(0, 0, 0);
@@ -2426,14 +2443,26 @@ class AstronomicalGlobeCard extends HTMLElement {
         // napoví "tady jsme". Reuse `makeMarkerTexture()` (stejný princip
         // jako GPS značka na glóbusu), jen jako jemné poloprůhledné halo
         // (`AdditiveBlending`, žádný ostrý bílý okraj) místo ostré tečky.
+        //
+        // OPRAVA (v0.21.0, nahlášeno uživatelem): halo je 5× větší než
+        // samotná Země (`visual.radius * 5`), což je v PŘEHLEDU celé
+        // soustavy záměr (jinak by v dálce splynula s tečkou), ale po
+        // přiblížení na Zemi (klik → zoom) tu samou plochu s aditivním
+        // mícháním úplně přebilo modrou září a planeta pod ní nebyla
+        // prakticky vidět. `opacity: 1` je tu EXPLICITNĚ (ne spoléhat na
+        // výchozí hodnotu three.js Material), protože `_frameSolar()` teď
+        // tuhle hodnotu plynule stahuje na `EARTH_HIGHLIGHT_ZOOM_OPACITY`,
+        // kdykoli je zrovna vybraná/zaostřená Země - viz komentář tam.
         const earthHighlight = new THREE.Sprite(new THREE.SpriteMaterial({
           map: makeMarkerTexture('rgba(125, 220, 255, 0.6)'),
           transparent: true,
           depthTest: false,
           blending: THREE.AdditiveBlending,
+          opacity: 1,
         }));
         earthHighlight.scale.set(visual.radius * 5, visual.radius * 5, 1);
         planetMesh.add(earthHighlight);
+        this._earthHighlightSprite = earthHighlight;
 
         // Měsíc jako mini-model (v0.14.0) - PŘIDANÝ JAKO DÍTĚ zemské
         // mesh, takže při pohybu Země (viz `_updateSolarPositions`) letí
@@ -3042,6 +3071,17 @@ class AstronomicalGlobeCard extends HTMLElement {
     const k = 1 - Math.exp(-Math.max(0, dt) / SOLAR_FOCUS_TIME_CONSTANT);
     this._solarFocusPoint.lerp(targetPoint, k);
     this._solarFocusDist += (targetDist - this._solarFocusDist) * k;
+
+    // OPRAVA (v0.21.0, nahlášeno uživatelem): zvýrazňovací halo Země (viz
+    // EARTH_HIGHLIGHT_ZOOM_OPACITY výš) se stejnou exponenciální rychlostí
+    // jako kamera plynule ztlumí na 0, dokud je Země zaostřená, a zase
+    // rozsvítí zpátky na plnou, jakmile se odzoomuje/vybere jiná planeta -
+    // souběžně s dolétem kamery, ne skokem.
+    if (this._earthHighlightSprite) {
+      const targetHighlightOpacity = this._solarFocusKey === 'earth' ? EARTH_HIGHLIGHT_ZOOM_OPACITY : 1;
+      const mat = this._earthHighlightSprite.material;
+      mat.opacity += (targetHighlightOpacity - mat.opacity) * k;
+    }
 
     const dist = this._solarFocusDist;
     const camera = this._solarCamera;

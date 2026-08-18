@@ -4,6 +4,15 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
+## [0.21.0] - 2026-08-13
+
+### Fixed
+- Solar System view: Earth's highlight halo (a soft blue glow used to make
+  Earth easy to spot in the full-system overview) was 5x the size of the
+  planet, so zooming in on Earth left it almost invisible under the glow.
+  The halo now fades out smoothly as the camera zooms in on Earth and
+  fades back in when you zoom out or select another planet.
+
 ## [0.20.0] - 2026-08-13
 
 ### Added
