@@ -23,6 +23,14 @@ versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
   viewport-relative sizing, so it scales correctly to the card's own
   width rather than the browser window's width - important when several
   cards share a dashboard row.
+- Panel view fix: in practice, Home Assistant's Panel view (single
+  full-screen card) does not hand the card a definite height, so a very
+  wide panel combined with the card's 1:1 fallback aspect ratio produced
+  a globe far taller than the screen (needed scrolling to see all of it).
+  `.agc-stage` now also has a hard `max-height` capped to the visible
+  viewport height (accounting for HA's header via `--header-height`), so
+  the card never exceeds what's actually visible on the monitor, even
+  when its container doesn't constrain height itself.
 
 ## [0.21.0] - 2026-08-13
 

@@ -1996,6 +1996,23 @@ class AstronomicalGlobeCard extends HTMLElement {
       .agc-stage {
         position: relative; width: 100%; aspect-ratio: 1 / 1;
         flex: 1 1 auto; min-height: 0; height: 100%;
+        /* max-height (v0.22.0): tvrdý strop na skutečnou dostupnou výšku
+           OBRAZOVKY, nezávisle na tom, jestli předek (Panel/Sections/
+           Masonry) dá kartě definitivní výšku. Ukázalo se, že v Panel view
+           (jedna karta na celý dashboard) HA v praxi definitivní výšku
+           dolů NEDÁVÁ (na rozdíl od předpokladu výše u height:100% řetězu)
+           - karta je pak velmi široká (celá obrazovka), aspect-ratio:1/1
+           fallback z toho udělá stejně vysoký čtverec, a ten je o dost
+           vyšší než viewport (karta "přeteče" a musí se scrollovat, přesně
+           nahlášený problém). --header-height je standardní HA proměnná
+           pro výšku horní lišty (+ řádek záložek pohledů) - dvh/vh verze
+           pro prohlížeče bez podpory dvh (starší) je záměrně napsaná jako
+           první, "vylepšující" dvh varianta jako druhá (stejný fallback
+           trik jako u cqw/vw u .agc-time). Nijak neomezuje kartu, když je
+           menší (typický Sections/Masonry případ) - jen brání přerůstání
+           přes viditelnou plochu monitoru. */
+        max-height: calc(100vh - var(--header-height, 56px));
+        max-height: calc(100dvh - var(--header-height, 56px));
         /* container-type/-name: umožňuje descendantům (.agc-time níž) škálovat
            font-size podle SKUTEČNÉ šířky karty (cqw), ne podle šířky
            prohlížeče (vw) - důležité, když je karta zmenšená v mřížce vedle
