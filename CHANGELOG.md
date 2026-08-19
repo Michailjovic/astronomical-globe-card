@@ -4,6 +4,26 @@ All notable changes to Astronomical Globe Card are documented here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
 
+## [0.22.0] - 2026-08-19
+
+### Added
+- Responsive sizing: the card now correctly fills whatever size its
+  container gives it, with no configuration needed. In a Sections (grid)
+  dashboard or a Panel view (single full-screen card), where Home
+  Assistant hands the card a definite width *and* height, the globe
+  stretches to fill that exact area (including non-square cells - the
+  camera's aspect ratio adapts so the globe stays a perfect sphere
+  instead of looking stretched). In a classic Masonry view, where only
+  the column width is fixed, it falls back to its previous 1:1 aspect
+  ratio derived from that width. Added `getGridOptions()` so Sections
+  dashboards suggest a sensible default 6x6 cell (freely resizable by
+  dragging in the section editor).
+- The clock/time text now scales using CSS container query units (with a
+  viewport-width fallback for older browsers) instead of purely
+  viewport-relative sizing, so it scales correctly to the card's own
+  width rather than the browser window's width - important when several
+  cards share a dashboard row.
+
 ## [0.21.0] - 2026-08-13
 
 ### Fixed

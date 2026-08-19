@@ -90,6 +90,22 @@ accent_color: ""              # volitelná CSS barva
 
 Kvalitu lze změnit kdykoli přes vizuální editor karty i za běhu.
 
+## Responzivita a velikost karty
+
+Karta se automaticky přizpůsobí prostoru, který jí dashboard dá – žádná
+ruční konfigurace poměru stran není potřeba:
+
+- **Sections (grid) dashboard** – buňka mřížky má pevnou šířku i výšku,
+  karta ji přesně vyplní (i když není čtvercová – kamera si poměr stran
+  přepočítá, takže glóbus zůstává kulatý, ne zploštělý). Karta nabízí
+  výchozí velikost 6×6 přes `getGridOptions()`, jde ji ale libovolně
+  přetáhnout v editoru sekce.
+- **Panel view** (jedna karta na celou obrazovku) – karta se natáhne na
+  celou dostupnou výšku panelu.
+- **Klasický Masonry view** – sloupec dashboardu určuje jen šířku, výška
+  není daná, takže karta spadne zpátky na poměr stran 1:1 odvozený ze
+  šířky sloupce (stejné chování jako dřív).
+
 ## Jak to funguje
 
 - **Terminátor** se počítá z reálné subsolární polohy (deklinace + rovnice

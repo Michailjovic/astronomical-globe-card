@@ -10,7 +10,7 @@
  *   entity (person / device_tracker / zone).
  * - Kompletně bez build kroku - čisté ES moduly, three.js vendorováno lokálně.
  *
- * @version 0.21.0
+ * @version 0.22.0
  *
  * POZOR (cache): vnořené JS moduly (lib/*.js) se importují staticky
  * (standardní `import` nahoře souboru - spolehlivější než dynamický
@@ -397,8 +397,8 @@
 // syntaktický string literál, jinak by to nebyl platný static import. Musí
 // se ale ručně držet synchronně s CARD_VERSION (viz paměť "verzování") -
 // jinak nedojde k cache-bustu vnořených lib/*.js souborů při bumpu verze.
-import * as THREE from './lib/three.module.min.js?v=0.21.0';
-import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.21.0';
+import * as THREE from './lib/three.module.min.js?v=0.22.0';
+import { getSunPosition, getMoonPosition, getSunTimes } from './lib/astro.js?v=0.22.0';
 import {
   getPlanetPositions,
   PLANET_ORDER,
@@ -407,7 +407,7 @@ import {
   NAKED_EYE_PLANETS,
   getPlutoPosition,
   PLUTO_MEAN_DISTANCE_AU,
-} from './lib/planets.js?v=0.21.0';
+} from './lib/planets.js?v=0.22.0';
 import {
   earthVertexShader,
   earthFragmentShader,
@@ -417,9 +417,9 @@ import {
   atmosphereFragmentShader,
   skyVertexShader,
   skyFragmentShader,
-} from './lib/earth-shaders.js?v=0.21.0';
+} from './lib/earth-shaders.js?v=0.22.0';
 
-const CARD_VERSION = '0.21.0';
+const CARD_VERSION = '0.22.0';
 const CARD_DIR = new URL('.', import.meta.url).href;
 const V = `?v=${CARD_VERSION}`;
 const EARTH_RADIUS = 1;
@@ -1002,6 +1002,26 @@ class AstronomicalGlobeCard extends HTMLElement {
 
   getCardSize() {
     return 6;
+  }
+
+  /**
+   * Výchozí/mantinelové rozměry pro HA "Sections" (grid) dashboard (v0.22.0).
+   * Buňka mřížky je čtvercová (1 sloupec == 1 řádek), takže 6×6 dá kartě
+   * hezkou střední velikost odpovídající výchozímu poměru 1:1 ze `_css()`.
+   * Uživatel pak v editoru sekce libovolně přetáhne na jiný (i obdélníkový)
+   * rozměr - CSS "fill container" řetěz (viz `_css()`) i `_onResize()`
+   * (přepočet `camera.aspect`) se přizpůsobí, karta proto nemusí zůstat
+   * čtvercová. min_columns/min_rows jen brání zmenšení na nepoužitelně
+   * malou plochu (ovládací tlačítka/text by se přestaly vejít).
+   */
+  getGridOptions() {
+    return {
+      columns: 6,
+      rows: 6,
+      min_columns: 3,
+      min_rows: 3,
+      max_columns: 12,
+    };
   }
 
   set hass(hass) {
@@ -1942,16 +1962,46 @@ class AstronomicalGlobeCard extends HTMLElement {
 
   _css() {
     return `
-      :host { display: block; }
-      ha-card { overflow: hidden; background: var(--agc-bg, #000); padding: 0; }
-      .agc-root { display: flex; flex-direction: column; }
+      /* Responzivní/"fill container" řetěz (v0.22.0): :host → ha-card →
+         .agc-root → .agc-stage všechny nesou height:100%. Když nadřazený
+         kontejner dá kartě REÁLNOU (definitivní) výšku - Sections/grid view
+         (buňka mřížky má pevnou výšku podle rows × row-height) nebo Panel
+         view (jediná karta na celou obrazovku, HA natáhne wrapper na
+         celou výšku panelu) - karta se přesně vyplní a nezůstane žádný
+         prázdný pruh nahoře/dole. Když ŽÁDNÝ předek definitivní výšku
+         nedává (klasický Masonry view - sloupec má jen pevnou ŠÍŘKU, výška
+         je "auto"/podle obsahu), CSS percentage-height se dle specifikace
+         chová jako 'auto' a do hry naskočí "aspect-ratio: 1/1" na
+         .agc-stage jako fallback - stejné chování jako dřív (čtvercová
+         karta odvozená ze šířky sloupce). Netřeba žádná ruční konfigurace
+         poměru stran ani rozlišování view módu v JS - řeší to čistě CSS
+         cascade + _onResize()/ResizeObserver (viz níž), který renderer
+         a camera.aspect přizpůsobí VÝSLEDNÉMU (třeba neúhledníkovému)
+         rozměru .agc-stage po layoutu. */
+      :host { display: block; height: 100%; }
+      ha-card {
+        overflow: hidden; background: var(--agc-bg, #000); padding: 0;
+        height: 100%; display: flex; flex-direction: column;
+      }
+      .agc-root {
+        display: flex; flex-direction: column; flex: 1 1 auto;
+        min-height: 0; height: 100%;
+      }
       .agc-title {
         font-size: 14px; font-weight: 500; padding: 10px 16px 0 16px;
         color: var(--primary-text-color, #fff); opacity: 0.7;
+        flex: 0 0 auto;
       }
       .agc-title:empty { display: none; }
       .agc-stage {
         position: relative; width: 100%; aspect-ratio: 1 / 1;
+        flex: 1 1 auto; min-height: 0; height: 100%;
+        /* container-type/-name: umožňuje descendantům (.agc-time níž) škálovat
+           font-size podle SKUTEČNÉ šířky karty (cqw), ne podle šířky
+           prohlížeče (vw) - důležité, když je karta zmenšená v mřížce vedle
+           dalších karet. Nepodporující prohlížeč tohle pravidlo prostě
+           ignoruje (bez chyby), padá zpět na vw viz .agc-time. */
+        container-type: inline-size; container-name: agc-stage;
         background: radial-gradient(circle at 50% 45%, #0a0f1e 0%, #000 80%);
         overflow: hidden;
       }
@@ -1977,7 +2027,9 @@ class AstronomicalGlobeCard extends HTMLElement {
         color: #fff; text-transform: uppercase;
       }
       .agc-time {
-        font-size: clamp(30px, 11vw, 52px); font-weight: 400; line-height: 1.05;
+        font-size: clamp(30px, 11vw, 52px); /* fallback bez podpory container query units */
+        font-size: clamp(22px, 13cqw, 52px);
+        font-weight: 400; line-height: 1.05;
         color: #fff; font-variant-numeric: tabular-nums; margin-top: 2px;
       }
 
