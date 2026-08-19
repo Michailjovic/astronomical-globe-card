@@ -427,6 +427,13 @@ const EARTH_RADIUS = 1;
 // vytvořený jednou při načtení modulu a jen čtený, ne měněný (sdílená
 // konstanta, ne "domovská hodnota kterou lze omylem přepsat").
 const IDENTITY_QUATERNION = new THREE.Quaternion();
+// Referenční "nahoru" osa lokální geometrie GPS vlaječky (viz
+// makeFlagMarkerGroup níž) - vlaječka je postavená podél +Y, a každý
+// snímek se přes `Quaternion.setFromUnitVectors(MARKER_UP_AXIS, homeDir)`
+// pootočí tak, aby ukazovala ven ze středu Země (kolmo na povrch) v místě
+// domovské/sledované polohy. Sdílená konstanta, ať se nealokuje nový
+// Vector3 v každém snímku.
+const MARKER_UP_AXIS = new THREE.Vector3(0, 1, 0);
 // Odsazeno dál (dřív 2.55) - glóbus zabírá cca 70 % výšky rámečku místo
 // skoro 100 %, takže je kolem něj vidět kus hvězdného vesmíru.
 const CAMERA_DISTANCE = 3.2;
@@ -524,9 +531,24 @@ const PLUTO_VISUAL = { color: 0xcbb89d, radius: 0.022 };
 // "tloušťku" jen zlomek AU, ale na tomhle měřítku by byl neviditelně
 // tenký - `ASTEROID_BELT_HEIGHT` je stylizovaně zvětšená, ať je z pásu
 // vidět, že je to mrak, ne dokonalý plochý kruh.
+//
+// v0.22.0 - PŘEPSÁNO z plochých `THREE.Points` čtverečků na skutečnou 3D
+// geometrii (viz `_initSolarScene`, kde se ASTEROID_* konstanty používají).
+// Důvod: `PointsMaterial` se `sizeAttenuation` nemá žádný strop velikosti -
+// dráha Marsu (vnitřní okraj pásu) je od Země ve zobrazovacím měřítku jen
+// ~0.21 jednotky, zatímco kamera po přiblížení na planetu (`_frameSolar`,
+// `SOLAR_FOCUS_DIST_FACTOR`) obíhá ve vzdálenosti ~0.45 - některý bod pásu
+// tak klidně skončí BLÍŽ kamery než samotná planeta, a jeho plochý čtverec
+// se roztáhne přes půl obrazovky (nahlášeno uživatelem: "asteroidy po
+// zoomu vypadají hrozně"). Skutečná (byť nízkopolygonová) geometrie tenhle
+// problém nemá vůbec - i zblízka je to prostě malý kamenný balvan.
 const ASTEROID_BELT_COUNT = 900;
 const ASTEROID_BELT_HEIGHT = 0.12;
 const ASTEROID_BELT_COLOR = 0x9a9a92;
+// Základní poloměr JEDNOHO balvanu (dvacetistěn, viz níž) před náhodným
+// neuniformním scale na instanci - malé číslo, ať je z dálky pořád jen
+// tečka jako dřív, ne nápadně "kostrbatý" shluk.
+const ASTEROID_MEAN_RADIUS = 0.007;
 // Měsíc jako mini-model u Země (v0.14.0) - skutečná vzdálenost Měsíce
 // (0.00257 AU) by na tomhle měřítku (Merkur už na 1.0) byla pod rozlišením
 // jednoho pixelu, takže stylizovaná (ne astronomicky přesná) vzdálenost od
@@ -828,6 +850,91 @@ function makeMarkerTexture(color) {
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace; // viz poznámka u makeGlowSpriteTexture
   return tex;
+}
+
+/**
+ * GPS značka domovské/sledované polohy (v0.22.0) - dřív plochý `THREE.Sprite`
+ * (kolečko z `makeMarkerTexture()`, vždy natočené čelem ke kameře), teď
+ * skutečná 3D "vlaječka na tyčce" zapíchnutá KOLMO do povrchu (nahlášeno
+ * uživatelem, že plochý bod nevypadal jako vlaječka). Vrací `THREE.Group`
+ * postavenou podél lokální osy +Y v JEDNOTKOVÉM měřítku - volající kód
+ * (`_initThree`/`_renderStaticParts`) na ni aplikuje jednotné
+ * `scale.setScalar(marker_size)` a `quaternion.setFromUnitVectors(
+ * MARKER_UP_AXIS, homeDir)` (viz `_frame()`), takže se geometrie staví jen
+ * jednou a posuvník "Velikost GPS značky" v editoru dál funguje stejně
+ * jako dřív (jen škáluje, nepřestavuje).
+ *
+ * DŮLEŽITÉ ROZHODNUTÍ - praporek leží PLOCHO nahoře na tyčce (normála
+ * podél tyčky, ne kolmo na ni jako fyzická vlajka na stožáru). Zkoušel se
+ * nejdřív "klasický" svislý praporek (postavený na výšku, jako skutečná
+ * vlajka) s billboardem kolem osy tyčky, aby čelil kameře - u TÉHLE karty
+ * to ale nemá řešení: kamera je GPS-uzamčená přesně na značku, takže na ni
+ * kouká prakticky VŽDY skoro přesně SHORA dolů podél stejné osy, na které
+ * stojí i tyčka (ověřeno numericky - úhel mezi směrem kamery a osou tyčky
+ * běžně jen pár stupňů). Z ptačí perspektivy přímo nad tyčkou je svislá
+ * plocha vidět zboku jako tenká čárka BEZ OHLEDU na to, kam se billboardem
+ * pootočí kolem tyčky - žádný azimut z tohohle úhlu nefunguje. Plochý
+ * praporek (normála = osa tyčky) je naopak z výchozí "ptačí" kamery vidět
+ * přesně čelem - stejný princip jako GPS špendlík/vlaječka na mapě viděná
+ * z družice/dronu. Při ručním naklonění/tažení karty navíc zůstává dobře
+ * čitelný (jen se foreshortne do elipsy, nikdy nezmizí do čárky), takže
+ * žádné per-frame natáčení není potřeba vůbec.
+ */
+function makeFlagMarkerGroup(color) {
+  const group = new THREE.Group();
+
+  const poleHeight = 0.85;
+  const poleRadius = 0.05;
+  const pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(poleRadius * 0.6, poleRadius, poleHeight, 6),
+    new THREE.MeshBasicMaterial({ color: 0xe8e8e8 })
+  );
+  // CylinderGeometry je defaultně vystředěná na svém středu - posunout tak,
+  // aby ZÁKLADNA (ne střed) seděla na povrchu glóbu (lokální y=0).
+  pole.position.y = poleHeight / 2;
+  group.add(pole);
+
+  // Praporek - trojúhelníkový "pennant" tvar postavený v lokální rovině
+  // XY (viz níž, než se celá `flagFlat` podskupina otočí o -90° kolem X) -
+  // vlaje šikmo od bodu uchycení u tyčky směrem "ven", čitelnější siluetu
+  // vlaječky na první pohled než plný obdélník.
+  const flagLen = poleHeight * 1.3; // jak daleko praporek "vlaje" od tyčky
+  const flagWid = poleHeight * 0.75;
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0);
+  shape.lineTo(flagLen, flagWid * 0.32);
+  shape.lineTo(0, flagWid);
+  shape.closePath();
+  const flag = new THREE.Mesh(
+    new THREE.ShapeGeometry(shape),
+    new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide })
+  );
+  flag.position.set(poleRadius, 0, 0);
+
+  // Tenký tmavý obrys praporku (stejné vrcholy jako shape) - jen kosmetika,
+  // ať se praporek opticky oddělí od podkladu (Země) i když má podobný
+  // odstín jako zrovna zabarvený terén pod ním.
+  const outlinePoints = shape.getPoints().map((p) => new THREE.Vector3(p.x, p.y, 0));
+  outlinePoints.push(outlinePoints[0]);
+  const outline = new THREE.LineLoop(
+    new THREE.BufferGeometry().setFromPoints(outlinePoints),
+    new THREE.LineBasicMaterial({ color: 0x1a1a1a, transparent: true, opacity: 0.45 })
+  );
+  outline.position.copy(flag.position);
+
+  // `flagFlat`: praporek+obrys postavené výš v "kolmé" rovině XY se tímhle
+  // otočením (-90° kolem X) sklopí do VODOROVNÉ roviny XZ, se svou
+  // normálou podél +Y - tzn. rovnoběžně s tyčkou/kolmo na povrch (viz
+  // dlouhá poznámka u funkce výš). `position.y = poleHeight` posadí
+  // praporek na samotný vršek tyčky.
+  const flagFlat = new THREE.Group();
+  flagFlat.rotation.x = -Math.PI / 2;
+  flagFlat.position.y = poleHeight;
+  flagFlat.add(flag);
+  flagFlat.add(outline);
+  group.add(flagFlat);
+
+  return group;
 }
 
 // -- Procedurální povrch planet při přiblížení (v0.19.0) -------------------
@@ -2244,9 +2351,9 @@ class AstronomicalGlobeCard extends HTMLElement {
     if (this._skyMesh) {
       this._skyMesh.visible = !!cfg.show_stars;
     }
-    if (this._markerSprite) {
+    if (this._markerGroup) {
       const markerSize = cfg.marker_size ?? DEFAULT_CONFIG.marker_size;
-      this._markerSprite.scale.set(markerSize, markerSize, 1);
+      this._markerGroup.scale.setScalar(markerSize);
     }
     // Tlačítka "vrátit domů"/"zámek" dávají smysl jen když je ruční
     // otáčení vůbec zapnuté a jsme v pohledu glóbu - jinak by natáčet
@@ -2361,20 +2468,14 @@ class AstronomicalGlobeCard extends HTMLElement {
     scene.add(atmosphereMesh);
     this._atmosphereMesh = atmosphereMesh;
 
-    // -- GPS značka -------------------------------------------------------
-    const markerTexture = makeMarkerTexture('#33e6b0');
-    const markerMaterial = new THREE.SpriteMaterial({
-      map: markerTexture,
-      depthTest: true,
-      transparent: true,
-    });
-    const markerSprite = new THREE.Sprite(markerMaterial);
+    // -- GPS značka (v0.22.0: 3D vlaječka na tyčce, viz makeFlagMarkerGroup) --
+    const markerGroup = makeFlagMarkerGroup('#dd2b2b');
     // Počáteční hodnota - hned po _initThree() ji přepíše _renderStaticParts()
     // podle cfg.marker_size (posuvník "Velikost GPS značky" v editoru).
     const initialMarkerSize = cfg.marker_size ?? DEFAULT_CONFIG.marker_size;
-    markerSprite.scale.set(initialMarkerSize, initialMarkerSize, 1);
-    earthMesh.add(markerSprite);
-    this._markerSprite = markerSprite;
+    markerGroup.scale.setScalar(initialMarkerSize);
+    earthMesh.add(markerGroup);
+    this._markerGroup = markerGroup;
 
     // -- Slunce (světelný zdroj + vizuální značka) ----------------------------
     const sunLight = new THREE.DirectionalLight(0xfff2d9, 1.55);
@@ -2589,36 +2690,62 @@ class AstronomicalGlobeCard extends HTMLElement {
       }
     }
 
-    // Pás asteroidů (v0.15.0, viz konstanty ASTEROID_BELT_* výš) - statický
-    // dekorativní oblak bodů mezi drahou Marsu a Jupiteru. `THREE.Points`
-    // (ne stovky jednotlivých Mesh) - jedna geometrie/draw-call pro
-    // stovky bodů, prakticky zadarmo na výkon narozdíl od tolika
-    // samostatných koulí.
+    // Pás asteroidů (v0.15.0, přepsáno na skutečnou 3D geometrii v0.22.0 -
+    // viz dlouhá poznámka u ASTEROID_* konstant výš) - statický dekorativní
+    // "mrak" balvanů mezi drahou Marsu a Jupiteru. `THREE.InstancedMesh`
+    // (jedna sdílená nízkopolygonová geometrie + 1 draw call pro všechny
+    // kusy) - stejně levné jako dřívější `THREE.Points`, ale každý kus je
+    // TEĎ skutečné (byť maličké) 3D těleso nasvícené stejným sluncem jako
+    // planety, ne plochý čtvereček bez textury. Neuniformní scale (různě
+    // po X/Y/Z) + náhodná rotace na instanci ze STEJNÉHO základního
+    // dvacetistěnu je levný trik na nepravidelný "kostrbatý" tvar bez
+    // potřeby unikátní geometrie na kus. `mulberry32` (viz výš, používá i
+    // `makePlanetMaterial` pro procedurální povrchy) - DETERMINISTICKÝ
+    // seed, ať pás vypadá při každém načtení karty stejně, ne jinak
+    // rozeseto po každém refreshi.
     {
       const innerR = auToDisplayRadius(PLANET_MEAN_DISTANCE_AU.mars);
       const outerR = auToDisplayRadius(PLANET_MEAN_DISTANCE_AU.jupiter);
-      const beltPositions = new Float32Array(ASTEROID_BELT_COUNT * 3);
+      const asteroidGeometry = new THREE.IcosahedronGeometry(ASTEROID_MEAN_RADIUS, 0);
+      const asteroidMaterial = new THREE.MeshStandardMaterial({
+        roughness: 0.95,
+        metalness: 0,
+        vertexColors: true,
+      });
+      const beltMesh = new THREE.InstancedMesh(asteroidGeometry, asteroidMaterial, ASTEROID_BELT_COUNT);
+      const dummy = new THREE.Object3D();
+      const tint = new THREE.Color(ASTEROID_BELT_COLOR);
+      const instanceColor = new THREE.Color();
+      const rand = mulberry32(0x4e57e01d); // libovolný pevný seed
       for (let i = 0; i < ASTEROID_BELT_COUNT; i++) {
-        const a = Math.random() * Math.PI * 2;
+        const a = rand() * Math.PI * 2;
         // sqrt(random) - rovnoměrné rozložení podle PLOCHY mezikruží, ne
         // podle poloměru (jinak by se body nepřirozeně hromadily u
         // vnitřního okraje).
-        const r = innerR + (outerR - innerR) * Math.sqrt(Math.random());
-        const y = (Math.random() - 0.5) * ASTEROID_BELT_HEIGHT;
-        beltPositions[i * 3] = r * Math.cos(a);
-        beltPositions[i * 3 + 1] = y;
-        beltPositions[i * 3 + 2] = r * Math.sin(a);
+        const r = innerR + (outerR - innerR) * Math.sqrt(rand());
+        const y = (rand() - 0.5) * ASTEROID_BELT_HEIGHT;
+        dummy.position.set(r * Math.cos(a), y, r * Math.sin(a));
+        dummy.rotation.set(rand() * Math.PI * 2, rand() * Math.PI * 2, rand() * Math.PI * 2);
+        // 0.5-2.2x na každou osu ZVLÁŠŤ - ze stejného pravidelného
+        // dvacetistěnu tak vznikne nepravidelný "protáhlý balvan", ne
+        // dokonalá kulička, a navíc různá velikost mezi jednotlivými kusy.
+        dummy.scale.set(
+          0.5 + rand() * 1.7,
+          0.5 + rand() * 1.7,
+          0.5 + rand() * 1.7
+        );
+        dummy.updateMatrix();
+        beltMesh.setMatrixAt(i, dummy.matrix);
+        // Jemná variace odstínu mezi kusy (±25 % jasu základní barvy), ať
+        // pás nepůsobí jako jedna vyštancovaná barva - skutečné asteroidy
+        // se liší složením/zvětráním povrchu.
+        instanceColor.copy(tint).multiplyScalar(0.75 + rand() * 0.5);
+        beltMesh.setColorAt(i, instanceColor);
       }
-      const beltGeometry = new THREE.BufferGeometry();
-      beltGeometry.setAttribute('position', new THREE.Float32BufferAttribute(beltPositions, 3));
-      const beltMaterial = new THREE.PointsMaterial({
-        color: ASTEROID_BELT_COLOR,
-        size: 0.012,
-        transparent: true,
-        opacity: 0.7,
-        sizeAttenuation: true,
-      });
-      scene.add(new THREE.Points(beltGeometry, beltMaterial));
+      beltMesh.instanceMatrix.needsUpdate = true;
+      if (beltMesh.instanceColor) beltMesh.instanceColor.needsUpdate = true;
+      scene.add(beltMesh);
+      this._asteroidBeltMesh = beltMesh;
     }
 
     // Pluto (v0.15.0, trpasličí planeta - NENÍ v PLANET_ORDER, viz
@@ -3223,9 +3350,17 @@ class AstronomicalGlobeCard extends HTMLElement {
       this._cloudsMesh.rotation.y = t * 0.006;
     }
 
-    // GPS značka + kamera sledující domovskou/sledovanou polohu
+    // GPS značka + kamera sledující domovskou/sledovanou polohu. Základna
+    // vlaječky sedí přímo NA povrchu (poloměr 1, ne 1.01 jako dřív u
+    // plochého sprite) - tyčka/praporek už samy vyčnívají ven, takže
+    // "zapíchnutí do povrchu" nepotřebuje žádný umělý odstup navíc.
+    // `setFromUnitVectors` pootočí lokální osu +Y (podél které je celá
+    // skupina postavená, viz MARKER_UP_AXIS/makeFlagMarkerGroup výš) tak,
+    // aby mířila přesně ven ze středu Země v místě `homeDir` - tyčka proto
+    // vždycky stojí kolmo k povrchu, ať se glóbus natočí jakkoli.
     const homeDir = geoToVector3(this._location.lat, this._location.lon, 1);
-    this._markerSprite.position.copy(homeDir).multiplyScalar(1.01);
+    this._markerGroup.position.copy(homeDir);
+    this._markerGroup.quaternion.setFromUnitVectors(MARKER_UP_AXIS, homeDir);
 
     let camDir = homeDir.clone();
     let camUp = new THREE.Vector3(0, 1, 0);

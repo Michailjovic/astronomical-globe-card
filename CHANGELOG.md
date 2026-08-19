@@ -31,6 +31,23 @@ versioning follows [SemVer](https://semver.org/) (`vMAJOR.MINOR.PATCH`).
   viewport height (accounting for HA's header via `--header-height`), so
   the card never exceeds what's actually visible on the monitor, even
   when its container doesn't constrain height itself.
+- GPS marker: the home/tracked-location marker on the globe is now a small
+  3D red flag on a pole, planted perpendicular to the surface, instead of
+  a flat camera-facing dot. The flag lies flat (facing outward along the
+  pole) rather than standing upright, since the globe's camera looks at
+  the marker almost straight-on from outside - an upright flag would
+  nearly always be seen edge-on from that angle, while a flat one reads
+  clearly from any viewing angle, including a manually tilted view.
+- Solar System view: the decorative asteroid belt is now built from small
+  shaded 3D rocks (`InstancedMesh`, one draw call, randomized non-uniform
+  scale/rotation per instance for an irregular look) instead of flat,
+  textureless square point sprites. This also fixes a real bug, not just
+  the visuals: the belt's inner edge sits closer to Earth's orbit than
+  the zoomed-in camera distance when focusing on Earth (or Mars), so a
+  point sprite could end up closer to the camera than the camera's own
+  focus distance - with the old point-sprite's unbounded size
+  attenuation, that blew a single asteroid up into a giant flat square
+  covering much of the screen. Real geometry has no such blow-up.
 
 ## [0.21.0] - 2026-08-13
 

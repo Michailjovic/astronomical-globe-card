@@ -115,8 +115,8 @@ ruční konfigurace poměru stran není potřeba:
   přesnost řádově desítky obloukových minut) a jeho fáze vzniká přirozeně
   fyzikálním osvětlením 3D koule stejným směrem slunečního světla – žádná
   "podvržená" textura fáze.
-- **Kamera** je uzamčená na tvé aktuální/domovské poloze (GPS tečka je proto
-  vždy viditelná, podobně jako na Apple Watch), s jemnou pomalou animací
+- **Kamera** je uzamčená na tvé aktuální/domovské poloze (červená vlaječka
+  je proto vždy viditelná, podobně jako na Apple Watch), s jemnou pomalou animací
   (`rotation_wobble`) pro živý dojem, aniž by to ovlivnilo přesnost
   terminátoru.
 - Karta vlastní `getConfigElement()`/`getStubConfig()`, takže funguje
